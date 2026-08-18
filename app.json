@@ -10,15 +10,18 @@
     "runtimeVersion": {
       "policy": "appVersion"
     },
-    
     "updates": {
-  "url": "https://u.expo.dev/85d79630-c6a4-4fd9-8b73-29946e9fc793",
-  "enabled": true,
-  "fallbackToCacheTimeout": 0,
-  "checkAutomatically": "ON_LOAD"
-},
+      "url": "https://u.expo.dev/85d79630-c6a4-4fd9-8b73-29946e9fc793",
+      "enabled": true,
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD"
+    },
     "ios": {
-      "icon": "./assets/expo.icon/Assets/icon.png"
+      "bundleIdentifier": "com.appsconcamilo.gastosapp",
+      "icon": "./assets/expo.icon/Assets/icon.png",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
