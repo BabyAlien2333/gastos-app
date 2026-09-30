@@ -4,13 +4,13 @@ import { getFirestore } from 'firebase/firestore';
 import { Platform } from 'react-native';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAteR20fcn0s5Q2PIqmC5Dc6IcDDYzbh7k",
-  authDomain: "gastos-app-c5d78.firebaseapp.com",
-  projectId: "gastos-app-c5d78",
-  storageBucket: "gastos-app-c5d78.firebasestorage.app",
-  messagingSenderId: "853947915967",
-  appId: "1:853947915967:web:7d145c36a2c846766a300a",
-  measurementId: "G-RGN2BTX5DJ"
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_FIREBASE_APP_ID,
+  measurementId: process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID,
 };
 
 const app = initializeApp(firebaseConfig);
