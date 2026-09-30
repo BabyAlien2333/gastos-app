@@ -2,18 +2,20 @@ import { useAuth } from '@/firebase/AuthContext';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Modal,
-    Platform,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useColorScheme,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useColorScheme,
+  View,
 } from 'react-native';
+
+const isWeb = Platform.OS === 'web';
 
 export default function LoginScreen() {
   const { login, resetPassword } = useAuth();
@@ -26,6 +28,9 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
+
+  // Focus states (solo se usan visualmente en web)
+  const [focusedInput, setFocusedInput] = useState<string | null>(null);
 
   // Modal restablecer contraseña
   const [resetModal, setResetModal] = useState(false);
@@ -82,10 +87,15 @@ export default function LoginScreen() {
   return (
     <>
       <KeyboardAvoidingView
-        style={[styles.container, { backgroundColor: colors.bg }]}
+        style={[styles.container, { backgroundColor: colors.bg }, isWeb && styles.containerWeb]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.inner}>
+        <View
+          style={[
+            styles.inner,
+            isWeb && [styles.innerWeb, { backgroundColor: colors.card }],
+          ]}
+        >
           <View style={styles.header}>
             <Text style={styles.emoji}>💰</Text>
             <Text style={[styles.title, { color: colors.text }]}>Bienvenido</Text>
@@ -95,28 +105,44 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.form}>
-            <View style={[styles.inputWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View
+              style={[
+                styles.inputWrap,
+                { backgroundColor: colors.card, borderColor: colors.border },
+                isWeb && focusedInput === 'identifier' && styles.inputWrapFocusedWeb,
+              ]}
+            >
               <Text style={styles.inputIcon}>👤</Text>
               <TextInput
-                style={[styles.input, { color: colors.text }]}
+                style={[styles.input, { color: colors.text }, isWeb && styles.inputWeb]}
                 value={identifier}
                 onChangeText={setIdentifier}
                 placeholder="Usuario o correo electrónico"
                 placeholderTextColor={colors.placeholder}
                 autoCapitalize="none"
                 keyboardType={identifier.includes('@') ? 'email-address' : 'default'}
+                onFocus={() => setFocusedInput('identifier')}
+                onBlur={() => setFocusedInput(null)}
               />
             </View>
 
-            <View style={[styles.inputWrap, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <View
+              style={[
+                styles.inputWrap,
+                { backgroundColor: colors.card, borderColor: colors.border },
+                isWeb && focusedInput === 'password' && styles.inputWrapFocusedWeb,
+              ]}
+            >
               <Text style={styles.inputIcon}>🔒</Text>
               <TextInput
-                style={[styles.input, { color: colors.text }]}
+                style={[styles.input, { color: colors.text }, isWeb && styles.inputWeb]}
                 value={password}
                 onChangeText={setPassword}
                 placeholder="Contraseña"
                 placeholderTextColor={colors.placeholder}
                 secureTextEntry={!showPass}
+                onFocus={() => setFocusedInput('password')}
+                onBlur={() => setFocusedInput(null)}
               />
               <TouchableOpacity onPress={() => setShowPass(!showPass)}>
                 <Text style={{ fontSize: 18 }}>{showPass ? '🙈' : '👁️'}</Text>
@@ -134,7 +160,7 @@ export default function LoginScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.btn, loading && { opacity: 0.7 }]}
+              style={[styles.btn, isWeb && styles.btnWeb, loading && { opacity: 0.7 }]}
               onPress={handleLogin}
               disabled={loading}
               activeOpacity={0.85}
@@ -152,7 +178,7 @@ export default function LoginScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.registerBtn, { borderColor: colors.border }]}
+              style={[styles.registerBtn, { borderColor: colors.border }, isWeb && styles.registerBtnWeb]}
               onPress={() => router.push('/register')}
             >
               <Text style={[styles.registerText, { color: colors.text }]}>
@@ -170,8 +196,8 @@ export default function LoginScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}
         >
-          <View style={styles.modalOverlay}>
-            <View style={[styles.modalBox, { backgroundColor: colors.card }]}>
+          <View style={[styles.modalOverlay, isWeb && styles.modalOverlayWeb]}>
+            <View style={[styles.modalBox, { backgroundColor: colors.card }, isWeb && styles.modalBoxWeb]}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 Restablecer contraseña
               </Text>
@@ -181,7 +207,7 @@ export default function LoginScreen() {
               <View style={[styles.inputWrap, { backgroundColor: colors.bg, borderColor: colors.border, marginBottom: 16 }]}>
                 <Text style={styles.inputIcon}>✉️</Text>
                 <TextInput
-                  style={[styles.input, { color: colors.text }]}
+                  style={[styles.input, { color: colors.text }, isWeb && styles.inputWeb]}
                   value={resetEmail}
                   onChangeText={setResetEmail}
                   placeholder="Correo electrónico"
@@ -230,7 +256,25 @@ function getColors(dark: boolean) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  // Web: fondo de página completo, contenido centrado vertical y horizontalmente
+  containerWeb: {
+    // @ts-ignore - minHeight con '100vh' solo aplica en web
+    minHeight: '100vh',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   inner: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
+  // Web: convierte el formulario en tarjeta flotante centrada con sombra
+  innerWeb: {
+    flex: 0,
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 20,
+    paddingVertical: 44,
+    paddingHorizontal: 36,
+    // @ts-ignore - boxShadow es CSS puro, solo existe en web
+    boxShadow: '0 8px 30px rgba(0,0,0,0.08)',
+  },
   header: { alignItems: 'center', marginBottom: 40 },
   emoji: { fontSize: 56, marginBottom: 16 },
   title: { fontSize: 28, fontWeight: '700', marginBottom: 8 },
@@ -240,22 +284,53 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 10,
     borderWidth: 0.5, borderRadius: 14, paddingHorizontal: 16, height: 52,
   },
+  // Web: resalta el input activo con borde azul, imitando focus moderno
+  inputWrapFocusedWeb: {
+    borderColor: '#185FA5',
+    borderWidth: 1.5,
+  },
   inputIcon: { fontSize: 18 },
   input: { flex: 1, fontSize: 15 },
+  // Web: quita el contorno azul feo del navegador al hacer focus
+  inputWeb: {
+    // @ts-ignore - outlineStyle es CSS puro
+    outlineStyle: 'none',
+  },
   forgotBtn: { alignSelf: 'flex-end', marginTop: -4 },
   forgotText: { fontSize: 13, fontWeight: '500' },
   btn: {
     backgroundColor: '#185FA5', borderRadius: 14,
     height: 52, alignItems: 'center', justifyContent: 'center', marginTop: 4,
   },
+  // Web: cursor de mano al pasar sobre el botón
+  btnWeb: {
+    // @ts-ignore - cursor es CSS puro
+    cursor: 'pointer',
+  },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   line: { flex: 1, height: 0.5 },
   dividerText: { fontSize: 13 },
   registerBtn: { borderWidth: 0.5, borderRadius: 14, height: 52, alignItems: 'center', justifyContent: 'center' },
+  registerBtnWeb: {
+    // @ts-ignore - cursor es CSS puro
+    cursor: 'pointer',
+  },
   registerText: { fontSize: 14 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  // Web: centra el modal en vez de pegarlo abajo (más de "app móvil")
+  modalOverlayWeb: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   modalBox: { borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 24 },
+  modalBoxWeb: {
+    borderRadius: 20,
+    width: '100%',
+    maxWidth: 400,
+    // @ts-ignore
+    boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+  },
   modalTitle: { fontSize: 17, fontWeight: '700', marginBottom: 8 },
   modalSubtitle: { fontSize: 13, marginBottom: 16, lineHeight: 18 },
   modalBtns: { flexDirection: 'row', gap: 12 },

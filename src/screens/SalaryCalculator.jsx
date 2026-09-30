@@ -162,14 +162,6 @@ const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => 
 };
 
 // ─── Compensatorios (CST art. 179-180, Ley 789/2002) ─────────────────────────
-// Cuando alguien trabaja un domingo o festivo sin tomar el descanso obligatorio,
-// la ley exige compensarlo de una de dos formas:
-//   a) Otorgando OTRO día cualquiera de descanso remunerado dentro del período, o
-//   b) Si no se otorga ese día libre, pagándolo monetariamente (un día ordinario más).
-// Esta función detecta los domingos/festivos trabajados y sugiere automáticamente
-// el siguiente día ordinario disponible como día libre compensatorio; si no hay
-// ningún día disponible en el período, lo deja resuelto como pago en dinero.
-// El usuario siempre puede cambiar la resolución a mano (botones 🔄 / 💰).
 const sugerirCompensatorios = (arr) => {
   const nuevo = arr.map((d) => ({ ...d }));
   for (let i = 0; i < nuevo.length; i++) {
@@ -193,8 +185,6 @@ const sugerirCompensatorios = (arr) => {
   return nuevo;
 };
 
-// Libera el día de descanso compensatorio ligado a un día especial (por label),
-// devolviéndolo a día ordinario normal. Muta el array recibido.
 const liberarCompensatorioDe = (arr, label) => {
   const idx = arr.findIndex((d) => d.compensatorioPor === label);
   if (idx >= 0) arr[idx] = { ...arr[idx], compensatorio: false, compensatorioPor: null };
@@ -227,6 +217,16 @@ export default function SalaryCalculator() {
   const [inclAuxTransp,   setInclAuxTransp]   = useState(true);
   const [inclDeducciones, setInclDeducciones] = useState(true);
 
+  // ── D1 Part Time: modo de ingreso del pago base ──────────────────────────
+  // false = ingresar valor hora directamente
+  // true  = ingresar sueldo base mensual explícito (como en el desprendible) y
+  //         calcular el valor hora automáticamente, igual que en contratos full time
+  const [modoSueldoPT,   setModoSueldoPT]   = useState(false);
+  const [salarioBasePT,  setSalarioBasePT]  = useState("");
+  // Auxilio de transporte en D1 Part Time: proporcional a horas trabajadas (default)
+  // o completo/legal (como si fuera full time)
+  const [auxCompletoPT,  setAuxCompletoPT]  = useState(false);
+
   const [showRecargos, setShowRecargos] = useState(false);
   const [pctNocturno,  setPctNocturno]  = useState("35");
   const [pctExtDia,    setPctExtDia]    = useState("25");
@@ -237,9 +237,6 @@ export default function SalaryCalculator() {
   const [diasXDescanso,  setDiasXDescanso]  = useState("6");
   const [inclPrima,      setInclPrima]      = useState(false);
 
-  // Jornada semanal contractual (configurable) — solo se usa para el
-  // resumen de horas semanal/mensual y su alerta, NO afecta la liquidación
-  // de nómina (que sigue usando HORAS_SEMANA_2026 = Ley 2101).
   const [jornadaContractual, setJornadaContractual] = useState(String(HORAS_SEMANA_2026));
 
   const [diaInicio,  setDiaInicio]  = useState("1");
@@ -305,24 +302,19 @@ export default function SalaryCalculator() {
           };
         }
       });
-      // Vuelve a sugerir compensatorios por si el escaneo agregó
-      // nuevos domingos/festivos trabajados.
       return sugerirCompensatorios(nuevo);
     });
   };
 
-  // ── FIX: cargarCorte — Alert va en setTimeout para no bloquear el render ──
   const cargarCorte = useCallback(() => {
     const di = parseInt(diaInicio) || 1;
     const df = parseInt(diaFin)    || 31;
     const generados = sugerirCompensatorios(generarDiasCorte(di, mesInicio, df, mesFin));
 
-    // Primero actualizamos el estado, LUEGO mostramos el Alert
     setDays(generados);
     setCorteCargado(true);
     setExpandedDay(null);
 
-    // ✅ setTimeout 0: espera a que React termine el render antes del Alert
     setTimeout(() => {
       const balances = Object.values(savedBalances);
       if (balances.length === 0) return;
@@ -355,7 +347,7 @@ export default function SalaryCalculator() {
           },
         ]
       );
-    }, 100); // 100ms es suficiente para que el render termine
+    }, 100);
   }, [diaInicio, diaFin, mesInicio, mesFin, savedBalances]);
 
   // ── Cálculos base ─────────────────────────────────────────────────────────
@@ -366,8 +358,15 @@ export default function SalaryCalculator() {
   const horasDiarias   = HORAS_SEMANA_2026 / 6;
   const valorHoraCalc  = salario > 0 ? salario / (30 * horasDiarias) : 0;
   const valorHoraIngresado = parseFloat(valorHoraManual.replace(/\./g, "").replace(",", ".")) || 0;
+
+  // Sueldo base mensual explícito para D1 Part Time (p.ej. el "Sueldo/Salario básico"
+  // que aparece en el desprendible de pago) y su valor hora derivado, con la misma
+  // fórmula que se usa para contratos full time.
+  const salarioBasePTNum = parseFloat(salarioBasePT.replace(/\./g, "").replace(",", ".")) || 0;
+  const valorHoraPTCalc  = salarioBasePTNum > 0 ? salarioBasePTNum / (30 * horasDiarias) : 0;
+
   const valorHora = isPartTime
-    ? valorHoraIngresado
+    ? (modoSueldoPT ? valorHoraPTCalc : valorHoraIngresado)
     : (modoHora ? valorHoraIngresado : valorHoraCalc);
 
   const domPctNum    = Math.max(0, parseFloat(domPct)      || 80) / 100;
@@ -380,12 +379,9 @@ export default function SalaryCalculator() {
 
   const jornadaContractualNum = Math.max(1, parseFloat(jornadaContractual) || HORAS_SEMANA_2026);
 
-  // ✅ calcDay como useCallback estable — evita recalcular en cada render
   const calcDay = useCallback((d) => {
     if (!d.worked || d.descanso) return { total: 0, detail: {} };
 
-    // Día de descanso compensatorio otorgado (cualquier día): se paga como
-    // un día ordinario completo, remunerado — no está ligado a horas de otro día.
     if (d.compensatorio) {
       const valorDiaComp = horasDiarias * valorHora;
       return { total: valorDiaComp, detail: { compensatorioDia: valorDiaComp } };
@@ -405,8 +401,6 @@ export default function SalaryCalculator() {
     const recExtDia = (d.extraDayH   || 0) * valorHora * (e ? (pctDomOrdNum + pctExtDiaNum) : pctExtDiaNum);
     const recExtNoc = (d.extraNightH || 0) * valorHora * (e ? (pctDomOrdNum + pctExtNocNum) : pctExtNocNum);
 
-    // Si este domingo/festivo trabajado NO recibió día libre compensatorio,
-    // se paga en dinero: el equivalente de un día ordinario adicional.
     const compensatorioDinero = (e && d.compensatorioTipo === "dinero") ? (horasDiarias * valorHora) : 0;
 
     return {
@@ -433,7 +427,6 @@ export default function SalaryCalculator() {
     return nuevoFormato > 0 ? nuevoFormato : formatoAnterior;
   }, [contrato.mesVencido, extrasPeriodoAnterior, valorHora, pctExtDiaNum, pctExtNocNum, pctDomOrdNum]);
 
-  // ✅ Todos los cálculos derivados con useMemo para no recalcular en cada render
   const {
     diasTrabajados, diasDescanso, diasCompensatorios, diasEspeciales,
     totalHorasPT, subtotalOrd, subtotalComp, subtotalCompDinero, subtotalExt,
@@ -448,12 +441,8 @@ export default function SalaryCalculator() {
     const compensatorios = compDiasArr.length;
     const especiales  = trabajados.filter((d) => d.especial).length;
     const horasPT     = trabajados.reduce((s, d) => s + (d.dayHours || 0) + (d.nightHours || 0), 0);
-    // subOrd ya incluye, para los domingos/festivos sin día libre otorgado,
-    // el pago en dinero del compensatorio (ver calcDay → compensatorioDinero)
     const subOrd      = trabajados.reduce((s, d) => s + calcDay(d).total, 0);
-    // Pago de los días de descanso compensatorio otorgados (día libre)
     const subComp     = compDiasArr.reduce((s, d) => s + calcDay(d).total, 0);
-    // Solo informativo: parte de subOrd que corresponde a compensatorios pagados en dinero
     const subCompDinero = trabajados
       .filter((d) => d.especial && d.compensatorioTipo === "dinero")
       .reduce((s, d) => s + (calcDay(d).detail.compensatorioDinero || 0), 0);
@@ -482,7 +471,9 @@ export default function SalaryCalculator() {
     const HORAS_MES_COMPLETO = 30 * horasDiarias;
     const auxBase = (contrato.auxTransporte && inclAuxTransp) ? AUX_TRANSPORTE : 0;
     const aux = isPartTime
-      ? Math.round(auxBase * (horasPT / HORAS_MES_COMPLETO))
+      ? (auxCompletoPT
+          ? auxBase
+          : Math.round(auxBase * (horasPT / HORAS_MES_COMPLETO)))
       : (salario <= 2 * SMMLV_2026 ? auxBase : 0);
 
     const devBase  = subOrd + subComp + descRem + prima + aux;
@@ -519,7 +510,7 @@ export default function SalaryCalculator() {
       totalNeto: neto,
     };
   }, [days, calcDay, calcExtrasVencidas, isPartTime, valorHora, inclPrima,
-      horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario]);
+      horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario, auxCompletoPT]);
 
   // ── Resumen de horas por semana y por mes ──────────────────────────────────
   const resumenHoras = useMemo(() => {
@@ -554,7 +545,6 @@ export default function SalaryCalculator() {
 
   const labelCorte = `${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`;
 
-  // ── Guardar balance ───────────────────────────────────────────────────────
   const isEditing = corteCargado && !!savedBalances[
     Object.keys(savedBalances).find(k => savedBalances[k].corte === labelCorte)
   ];
@@ -569,6 +559,9 @@ export default function SalaryCalculator() {
         salario,
         valorHoraManual,
         modoHora,
+        modoSueldoPT,
+        salarioBasePT,
+        auxCompletoPT,
         domPct,
         diasXDescanso,
         inclPrima,
@@ -615,23 +608,24 @@ export default function SalaryCalculator() {
       return;
     }
     setBalanceModal(false);
-    // ✅ setTimeout para evitar conflicto entre cierre del modal y setState
     setTimeout(() => {
       const tc = TIPOS_CONTRATO.find((t) => t.id === b.contrato) || TIPOS_CONTRATO[0];
       setTipoContrato(tc);
       setSalarioBase(b.salarioBase || String(b.salario || ""));
       if (b.valorHoraManual)         setValorHoraManual(b.valorHoraManual);
       if (b.modoHora !== undefined)  setModoHora(b.modoHora);
+      if (b.modoSueldoPT !== undefined) setModoSueldoPT(b.modoSueldoPT);
+      if (b.salarioBasePT)           setSalarioBasePT(b.salarioBasePT);
+      if (b.auxCompletoPT !== undefined) setAuxCompletoPT(b.auxCompletoPT);
       if (b.domPct)                  setDomPct(b.domPct);
       if (b.diasXDescanso)           setDiasXDescanso(b.diasXDescanso);
       if (b.inclPrima !== undefined) setInclPrima(b.inclPrima);
       if (b.pctNocturno)             setPctNocturno(b.pctNocturno);
       if (b.pctExtDia)               setPctExtDia(b.pctExtDia);
       if (b.pctExtNoche)             setPctExtNoche(b.pctExtNoche);
-      if (b.pctDomOrd)               setPctDomOrd(b.pctDomOrd);
+      if (b.pctDomOrd)                setPctDomOrd(b.pctDomOrd);
       if (b.jornadaContractual)      setJornadaContractual(b.jornadaContractual);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
-      // Compatibilidad con balances guardados antes de tener compensatorios
       const snapshot = (b.daysSnapshot || []).map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
         ...d,
@@ -751,8 +745,6 @@ export default function SalaryCalculator() {
     const nuevo = prev.map((d) => ({ ...d }));
     const item = nuevo[i];
     item.worked = !item.worked;
-    // Si se desactiva un domingo/festivo que ya tenía compensatorio resuelto,
-    // liberamos el día libre asociado (si lo hay) y dejamos el compensatorio pendiente.
     if (!item.worked && item.especial && item.compensatorioTipo) {
       liberarCompensatorioDe(nuevo, item.label);
       item.compensatorioTipo = null;
@@ -770,13 +762,11 @@ export default function SalaryCalculator() {
     return nuevo;
   }), []);
 
-  // Quita o agrega un día de descanso compensatorio (🔄) en un día ordinario cualquiera.
   const toggleCompensatorio = useCallback((i) => setDays((prev) => {
     const nuevo = prev.map((d) => ({ ...d }));
     const item = nuevo[i];
 
     if (item.compensatorio) {
-      // Se quita el día libre: el domingo/festivo que compensaba vuelve a quedar pendiente.
       const origenLabel = item.compensatorioPor;
       item.compensatorio = false;
       item.compensatorioPor = null;
@@ -788,7 +778,6 @@ export default function SalaryCalculator() {
       item.compensatorio = true;
       item.descanso = false;
       item.worked = true;
-      // Si hay un domingo/festivo trabajado sin resolver, este día libre lo compensa.
       const origen = nuevo.find((d) => d.especial && d.worked && !d.descanso && !d.compensatorioTipo);
       if (origen) {
         origen.compensatorioTipo = "dia";
@@ -799,7 +788,6 @@ export default function SalaryCalculator() {
     return nuevo;
   }), []);
 
-  // En un domingo/festivo trabajado: alterna entre "día libre otorgado" y "pagado en dinero".
   const toggleCompensatorioTipo = useCallback((i) => setDays((prev) => {
     const nuevo = prev.map((d) => ({ ...d }));
     const origen = nuevo[i];
@@ -1042,22 +1030,59 @@ export default function SalaryCalculator() {
           <View style={ss.card}>
             {isPartTime ? (
               <>
-                <Text style={ss.sectionTitle}>💵 Valor hora (COP)</Text>
-                <TextInput
-                  style={ss.rateInputBig}
-                  placeholder="Ej: 8500"
-                  placeholderTextColor="#aaa"
-                  keyboardType="numeric"
-                  returnKeyType="done"
-                  blurOnSubmit
-                  value={valorHoraManual}
-                  onChangeText={setValorHoraManual}
-                />
-                {valorHora > 0 && (
-                  <View style={ss.infoRow}>
-                    <Text style={ss.infoText}>Valor hora ingresado</Text>
-                    <Text style={ss.infoVal}>{formatCOP(valorHora)}/hora</Text>
-                  </View>
+                <View style={ss.modoRow}>
+                  <TouchableOpacity style={[ss.modoBtn, !modoSueldoPT && ss.modoBtnActive]} onPress={() => setModoSueldoPT(false)}>
+                    <Text style={[ss.modoBtnText, !modoSueldoPT && ss.modoBtnTextActive]}>⏱ Valor por hora</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[ss.modoBtn, modoSueldoPT && ss.modoBtnActive]} onPress={() => setModoSueldoPT(true)}>
+                    <Text style={[ss.modoBtnText, modoSueldoPT && ss.modoBtnTextActive]}>💼 Sueldo base mensual</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {!modoSueldoPT ? (
+                  <>
+                    <Text style={ss.sectionTitle}>💵 Valor hora (COP)</Text>
+                    <TextInput
+                      style={ss.rateInputBig}
+                      placeholder="Ej: 8500"
+                      placeholderTextColor="#aaa"
+                      keyboardType="numeric"
+                      returnKeyType="done"
+                      blurOnSubmit
+                      value={valorHoraManual}
+                      onChangeText={setValorHoraManual}
+                    />
+                    {valorHora > 0 && (
+                      <View style={ss.infoRow}>
+                        <Text style={ss.infoText}>Valor hora ingresado</Text>
+                        <Text style={ss.infoVal}>{formatCOP(valorHora)}/hora</Text>
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Text style={ss.sectionTitle}>💼 Sueldo/Salario básico (COP)</Text>
+                    <Text style={ss.cutDesc}>
+                      El valor que aparece explícito en tu desprendible de pago. La app calcula el
+                      valor hora dividiendo entre las horas del mes, igual que en un contrato full time.
+                    </Text>
+                    <TextInput
+                      style={ss.rateInputBig}
+                      placeholder="Ej: 1.857.000"
+                      placeholderTextColor="#aaa"
+                      keyboardType="numeric"
+                      returnKeyType="done"
+                      blurOnSubmit
+                      value={salarioBasePT}
+                      onChangeText={setSalarioBasePT}
+                    />
+                    {salarioBasePTNum > 0 && (
+                      <View style={ss.infoRow}>
+                        <Text style={ss.infoText}>Valor hora calculado</Text>
+                        <Text style={ss.infoVal}>{formatCOP(valorHoraPTCalc)}/hora</Text>
+                      </View>
+                    )}
+                  </>
                 )}
               </>
             ) : (
@@ -1122,10 +1147,23 @@ export default function SalaryCalculator() {
                 <View style={{ flex: 1 }}>
                   <Text style={ss.toggleLabel}>Auxilio de transporte</Text>
                   <Text style={ss.toggleSub}>
-                    {isPartTime ? `Proporcional a horas · base ${formatCOP(AUX_TRANSPORTE)}` : `${formatCOP(AUX_TRANSPORTE)}/mes · solo si salario ≤ 2 SMMLV`}
+                    {isPartTime
+                      ? (auxCompletoPT
+                          ? `${formatCOP(AUX_TRANSPORTE)}/mes completo · full time`
+                          : `Proporcional a horas · base ${formatCOP(AUX_TRANSPORTE)}`)
+                      : `${formatCOP(AUX_TRANSPORTE)}/mes · solo si salario ≤ 2 SMMLV`}
                   </Text>
                 </View>
                 <Switch value={inclAuxTransp} onValueChange={setInclAuxTransp} trackColor={{ true: "#4F46E5" }} />
+              </View>
+            )}
+            {isPartTime && contrato.auxTransporte && (
+              <View style={ss.toggleRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={ss.toggleLabel}>Aux. transporte completo (full time)</Text>
+                  <Text style={ss.toggleSub}>Desactivado = proporcional a las horas trabajadas del mes</Text>
+                </View>
+                <Switch value={auxCompletoPT} onValueChange={setAuxCompletoPT} trackColor={{ true: "#4F46E5" }} />
               </View>
             )}
             {contrato.prestaciones && (
