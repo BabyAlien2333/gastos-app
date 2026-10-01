@@ -11,7 +11,6 @@ import {
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -20,7 +19,7 @@ import {
   StyleSheet,
   Switch,
   Text, TextInput, TouchableOpacity,
-  View,
+  View
 } from "react-native";
 import { auth, db } from "../firebase/firebaseConfig";
 import ScheduleScanner from "./ScheduleScanner";
@@ -276,7 +275,7 @@ export default function SalaryCalculator() {
 
   const saveBalance = async (key, entry) => {
     const user = auth.currentUser;
-    if (!user) return Alert.alert("Error", "Debes iniciar sesión para guardar.");
+    if (!user) return showAlert("Error", "Debes iniciar sesión para guardar.");
     const docId = `${user.uid}_${key.replace(/[^a-zA-Z0-9]/g, "_")}`;
     await setDoc(doc(db, "salary_balances", docId), { ...entry, uid: user.uid });
   };
@@ -330,7 +329,7 @@ export default function SalaryCalculator() {
       const tieneRecargos = Object.values(ext).some((v) => v > 0);
       if (!tieneRecargos) return;
 
-      Alert.alert(
+      showAlert(
         "⚡ Recargos pendientes del período anterior",
         `Del corte ${ultimo.corte} tienes recargos por pagar:\n\n` +
         (ext.recNoche  > 0 ? `• Nocturno: ${formatCOP(ext.recNoche)}\n`      : "") +
@@ -550,7 +549,7 @@ export default function SalaryCalculator() {
   ];
 
   const handleSave = async () => {
-    if (!corteCargado) return Alert.alert("Carga el período primero");
+    if (!corteCargado) return showAlert("Carga el período primero");
     try {
       const entry = {
         key: labelCorte,
@@ -583,28 +582,28 @@ export default function SalaryCalculator() {
         jornadaContractual,
       };
       await saveBalance(labelCorte, entry);
-      Alert.alert(
+      showAlert(
         isEditing ? "✅ Actualizado" : "✅ Guardado",
         `Balance ${labelCorte} guardado y sincronizado.`
       );
     } catch (e) {
-      Alert.alert("Error", "No se pudo guardar: " + e.message);
+      showAlert("Error", "No se pudo guardar: " + e.message);
     }
   };
 
   const handleDelete = (key) => {
-    Alert.alert("Eliminar", `¿Eliminar balance ${key}?`, [
+    showAlert("Eliminar", `¿Eliminar balance ${key}?`, [
       { text: "Cancelar", style: "cancel" },
       { text: "Eliminar", style: "destructive", onPress: async () => {
         try { await deleteBalance(key); }
-        catch (e) { Alert.alert("Error", "No se pudo eliminar: " + e.message); }
+        catch (e) { showAlert("Error", "No se pudo eliminar: " + e.message); }
       }},
     ]);
   };
 
   const handleEdit = (b) => {
     if (!b.daysSnapshot) {
-      Alert.alert("Balance antiguo", "Este balance no tiene datos para editar.");
+      showAlert("Balance antiguo", "Este balance no tiene datos para editar.");
       return;
     }
     setBalanceModal(false);
@@ -736,8 +735,8 @@ export default function SalaryCalculator() {
       const { uri } = await Print.printToFileAsync({ html, base64: false });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Exportar nómina", UTI: "com.adobe.pdf" });
-      } else Alert.alert("PDF", uri);
-    } catch (e) { Alert.alert("Error", e.message); }
+      } else showAlert("PDF", uri);
+    } catch (e) { showAlert("Error", e.message); }
   };
 
   // ── Render día ────────────────────────────────────────────────────────────
@@ -808,7 +807,7 @@ export default function SalaryCalculator() {
         }
       }
       if (!asignado) {
-        Alert.alert(
+        showAlert(
           "Sin días disponibles",
           "No hay otro día ordinario libre en este período para otorgar como compensatorio. Se mantiene el pago en dinero."
         );

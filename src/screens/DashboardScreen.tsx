@@ -1,7 +1,7 @@
 import { useApp } from '@/context/AppContext';
+import { showAlert } from '@/utils/alert';
 import React, { useMemo, useState } from 'react';
 import {
-  Alert,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -105,7 +105,7 @@ export default function DashboardScreen() {
 
   const handleSaveIncome = async () => {
     const num = parseFloat(incomeInput.replace(/\./g, '').replace(',', '.'));
-    if (!num || num <= 0) return Alert.alert('Error', 'Ingresa un monto válido');
+    if (!num || num <= 0) return showAlert('Error', 'Ingresa un monto válido');
     await updateProfile({ ...userProfile, monthlyIncome: num });
     setIncomeInput('');
     setIncomeModal(false);
@@ -114,18 +114,18 @@ export default function DashboardScreen() {
   // NUEVO: guardar aporte diario
   const handleSaveAport = async () => {
     const num = parseFloat(aportAmount.replace(/\./g, '').replace(',', '.'));
-    if (!num || num <= 0) return Alert.alert('Error', 'Ingresa un monto válido');
-    if (!aportDesc.trim()) return Alert.alert('Error', 'Agrega una descripción');
+    if (!num || num <= 0) return showAlert('Error', 'Ingresa un monto válido');
+    if (!aportDesc.trim()) return showAlert('Error', 'Agrega una descripción');
     await addIncome(num, aportDesc.trim());
     setAportAmount('');
     setAportDesc('');
     setAportModal(false);
-    Alert.alert('✅ Aporte registrado', `Se sumaron ${fmt(num)} a tu balance mensual`);
+    showAlert('✅ Aporte registrado', `Se sumaron ${fmt(num)} a tu balance mensual`);
   };
 
   const handleLogout = () => {
     setUserModal(false);
-    Alert.alert('Cerrar sesión', '¿Seguro que quieres salir?', [
+    showAlert('Cerrar sesión', '¿Seguro que quieres salir?', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Salir', style: 'destructive', onPress: logout },
     ]);
