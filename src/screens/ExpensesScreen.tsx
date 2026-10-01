@@ -1,8 +1,9 @@
 import { useApp } from '@/context/AppContext';
+import { showAlert } from '@/utils/alert';
 import React, { useState } from 'react';
 import {
-    KeyboardAvoidingView, Modal, Platform, StyleSheet, Text,
-    TextInput, TouchableOpacity, useColorScheme, View
+  KeyboardAvoidingView, Modal, Platform, StyleSheet, Text,
+  TextInput, TouchableOpacity, useColorScheme, View
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 

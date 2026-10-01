@@ -1,13 +1,14 @@
 import { useApp } from '@/context/AppContext';
+import { showAlert } from '@/utils/alert';
 import React, { useState } from 'react';
 import {
-    Modal,
-    ScrollView, StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    useColorScheme,
-    View
+  Modal,
+  ScrollView, StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  useColorScheme,
+  View
 } from 'react-native';
 
 export default function GoalsScreen() {

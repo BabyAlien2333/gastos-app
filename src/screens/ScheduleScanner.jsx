@@ -1,14 +1,15 @@
+import { showAlert } from '@/utils/alert';
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
 import {
-    ActivityIndicator,
-    Image,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text, TouchableOpacity,
-    View
+  ActivityIndicator,
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text, TouchableOpacity,
+  View
 } from "react-native";
 
 const fmtHrs = (v) => {
