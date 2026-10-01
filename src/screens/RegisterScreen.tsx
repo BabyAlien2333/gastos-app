@@ -1,15 +1,15 @@
 import { useAuth } from '@/firebase/AuthContext';
+import { showAlert } from '@/utils/alert';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView, Platform,
-    ScrollView,
-    StyleSheet,
-    Text, TextInput, TouchableOpacity,
-    useColorScheme,
-    View,
+  ActivityIndicator,
+  KeyboardAvoidingView, Platform,
+  ScrollView,
+  StyleSheet,
+  Text, TextInput, TouchableOpacity,
+  useColorScheme,
+  View
 } from 'react-native';
 
 export default function RegisterScreen() {
@@ -28,13 +28,13 @@ export default function RegisterScreen() {
 
   const handleRegister = async () => {
     if (!name.trim() || !email.trim() || !password || !confirm) {
-      return Alert.alert('Error', 'Completa todos los campos');
+      return showAlert('Error', 'Completa todos los campos');
     }
     if (password !== confirm) {
-      return Alert.alert('Error', 'Las contraseñas no coinciden');
+      return showAlert('Error', 'Las contraseñas no coinciden');
     }
     if (password.length < 6) {
-      return Alert.alert('Error', 'La contraseña debe tener al menos 6 caracteres');
+      return showAlert('Error', 'La contraseña debe tener al menos 6 caracteres');
     }
     setLoading(true);
     try {
@@ -45,7 +45,7 @@ export default function RegisterScreen() {
         e.code === 'auth/invalid-email' ? 'Correo inválido' :
         e.code === 'auth/weak-password' ? 'Contraseña muy débil' :
         'Error al crear la cuenta';
-      Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setLoading(false);
     }

@@ -1,15 +1,14 @@
+import { useApp } from '@/context/AppContext';
 import React, { useState } from 'react';
 import {
-    Alert,
     Modal,
     ScrollView, StyleSheet,
     Text,
     TextInput,
     TouchableOpacity,
     useColorScheme,
-    View,
+    View
 } from 'react-native';
-import { useApp } from '@/context/AppContext';
 
 export default function GoalsScreen() {
   const { goals, addGoal, updateGoal, deleteGoal } = useApp();
@@ -33,8 +32,8 @@ export default function GoalsScreen() {
 
   const handleAdd = () => {
     const tgt = parseFloat(target.replace(',', '.'));
-    if (!name.trim()) return Alert.alert('Error', 'Ingresa un nombre');
-    if (!tgt || tgt <= 0) return Alert.alert('Error', 'Ingresa una meta válida');
+    if (!name.trim()) return showAlert('Error', 'Ingresa un nombre');
+    if (!tgt || tgt <= 0) return showAlert('Error', 'Ingresa una meta válida');
     addGoal({ name: name.trim(), emoji: emoji || '🎯', target: tgt, saved: 0, color: goalColor });
     setName(''); setEmoji(''); setTarget(''); setGoalColor(goalColors[0]);
     setAddModal(false);
@@ -42,7 +41,7 @@ export default function GoalsScreen() {
 
   const handleDeposit = () => {
     const amt = parseFloat(depositAmt.replace(',', '.'));
-    if (!amt || amt <= 0) return Alert.alert('Error', 'Ingresa un monto válido');
+    if (!amt || amt <= 0) return showAlert('Error', 'Ingresa un monto válido');
     if (selectedGoal) updateGoal(selectedGoal, amt);
     setDepositAmt('');
     setDepositModal(false);
@@ -102,7 +101,7 @@ export default function GoalsScreen() {
               )}
               <TouchableOpacity
                 style={[styles.deleteBtn, { borderColor: colors.border }]}
-                onPress={() => Alert.alert('Eliminar', `¿Eliminar "${g.name}"?`, [
+                onPress={() => showAlert('Eliminar', `¿Eliminar "${g.name}"?`, [
                   { text: 'Cancelar', style: 'cancel' },
                   { text: 'Eliminar', style: 'destructive', onPress: () => deleteGoal(g.id) },
                 ])}

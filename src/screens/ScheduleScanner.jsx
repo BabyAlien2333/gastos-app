@@ -2,13 +2,13 @@ import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
 import {
-    ActivityIndicator, Alert,
+    ActivityIndicator,
     Image,
     Modal,
     ScrollView,
     StyleSheet,
     Text, TouchableOpacity,
-    View,
+    View
 } from "react-native";
 
 const fmtHrs = (v) => {
@@ -64,7 +64,7 @@ export default function ScheduleScanner({ days, onApply, onClose }) {
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!perm.granted) {
-      Alert.alert("Permiso requerido", "Necesitamos acceso a " + (fromCamera ? "la cámara" : "tu galería"));
+      showAlert("Permiso requerido", "Necesitamos acceso a " + (fromCamera ? "la cámara" : "tu galería"));
       return;
     }
 
@@ -170,7 +170,7 @@ Si el horario muestra turnos rotativos, interprétalos según los días del per�
       setResultado({ ...parsed, dias: diasEnriquecidos });
       setPreview(true);
     } catch (e) {
-      Alert.alert(
+      showAlert(
         "Error al interpretar",
         "No se pudo leer el horario. Intenta con una foto más clara o con mejor iluminación.\n\nDetalle: " + e.message
       );

@@ -4,7 +4,6 @@ import { collection, doc, getDocs, query, updateDoc, where } from 'firebase/fire
 import React, { useState } from 'react';
 import {
     ActivityIndicator,
-    Alert,
     KeyboardAvoidingView,
     Platform,
     StyleSheet,
@@ -12,7 +11,7 @@ import {
     TextInput,
     TouchableOpacity,
     useColorScheme,
-    View,
+    View
 } from 'react-native';
 
 export default function SetupUsernameScreen() {
@@ -26,13 +25,13 @@ export default function SetupUsernameScreen() {
 
   const handleSave = async () => {
     if (!username.trim()) {
-      return Alert.alert('Error', 'Ingresa un nombre de usuario');
+      return showAlert('Error', 'Ingresa un nombre de usuario');
     }
     if (username.trim().length < 3) {
-      return Alert.alert('Error', 'El usuario debe tener al menos 3 caracteres');
+      return showAlert('Error', 'El usuario debe tener al menos 3 caracteres');
     }
     if (!/^[a-zA-Z0-9_]+$/.test(username.trim())) {
-      return Alert.alert('Error', 'Solo letras, números y guión bajo (_)');
+      return showAlert('Error', 'Solo letras, números y guión bajo (_)');
     }
 
     setLoading(true);
@@ -44,7 +43,7 @@ export default function SetupUsernameScreen() {
       );
       const snap = await getDocs(q);
       if (!snap.empty) {
-        return Alert.alert('Error', 'Ese nombre de usuario ya está en uso');
+        return showAlert('Error', 'Ese nombre de usuario ya está en uso');
       }
 
       // Guardar en Firestore
@@ -56,7 +55,7 @@ export default function SetupUsernameScreen() {
 
       router.replace('/(tabs)');
     } catch (e: any) {
-      Alert.alert('Error', e.message || 'No se pudo guardar el usuario');
+      showAlert('Error', e.message || 'No se pudo guardar el usuario');
     } finally {
       setLoading(false);
     }

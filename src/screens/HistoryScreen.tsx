@@ -1,13 +1,12 @@
 import { useApp } from '@/context/AppContext';
 import React, { useMemo, useState } from 'react';
 import {
-  Alert,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  useColorScheme,
-  View,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    useColorScheme,
+    View
 } from 'react-native';
 
 const MONTHS = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -83,12 +82,12 @@ export default function HistoryScreen() {
 
   const handleLongPress = (item: HistoryItem) => {
     if (item.kind === 'expense') {
-      Alert.alert('Eliminar gasto', `¿Eliminar "${item.description}"?`, [
+      showAlert('Eliminar gasto', `¿Eliminar "${item.description}"?`, [
         { text: 'Cancelar', style: 'cancel' },
         { text: 'Eliminar', style: 'destructive', onPress: () => deleteExpense(item.id) },
       ]);
     } else {
-      Alert.alert('Eliminar aporte', `¿Eliminar el aporte "${item.description}" de ${fmt(item.amount)}?\nEsto restará el monto de tu balance.`, [
+      showAlert('Eliminar aporte', `¿Eliminar el aporte "${item.description}" de ${fmt(item.amount)}?\nEsto restará el monto de tu balance.`, [
         { text: 'Cancelar', style: 'cancel' },
         { text: 'Eliminar', style: 'destructive', onPress: () => deleteIncome(item.id) },
       ]);

@@ -3,7 +3,6 @@ import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,7 +11,7 @@ import {
   TextInput,
   TouchableOpacity,
   useColorScheme,
-  View,
+  View
 } from 'react-native';
 
 const isWeb = Platform.OS === 'web';
@@ -39,7 +38,7 @@ export default function LoginScreen() {
 
   const handleLogin = async () => {
     if (!identifier.trim() || !password.trim()) {
-      return Alert.alert('Error', 'Completa todos los campos');
+      return showAlert('Error', 'Completa todos los campos');
     }
     setLoading(true);
     try {
@@ -51,7 +50,7 @@ export default function LoginScreen() {
         e.code === 'auth/invalid-email' ? 'Correo inválido' :
         e.code === 'auth/invalid-credential' ? 'Credenciales incorrectas' :
         'Error al iniciar sesión: ' + (e.message || e.code || JSON.stringify(e));
-      Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setLoading(false);
     }
@@ -59,17 +58,17 @@ export default function LoginScreen() {
 
   const handleReset = async () => {
     if (!resetEmail.trim()) {
-      return Alert.alert('Error', 'Ingresa tu correo electrónico');
+      return showAlert('Error', 'Ingresa tu correo electrónico');
     }
     if (!resetEmail.includes('@')) {
-      return Alert.alert('Error', 'Ingresa un correo válido');
+      return showAlert('Error', 'Ingresa un correo válido');
     }
     setResetLoading(true);
     try {
       await resetPassword(resetEmail.trim());
       setResetModal(false);
       setResetEmail('');
-      Alert.alert(
+      showAlert(
         '✅ Correo enviado',
         `Se envió el link de restablecimiento a ${resetEmail.trim()}. Revisa tu bandeja de entrada.`
       );
@@ -78,7 +77,7 @@ export default function LoginScreen() {
         e.code === 'auth/user-not-found' ? 'No existe una cuenta con ese correo' :
         e.code === 'auth/invalid-email' ? 'Correo inválido' :
         'Error al enviar el correo';
-      Alert.alert('Error', msg);
+      showAlert('Error', msg);
     } finally {
       setResetLoading(false);
     }

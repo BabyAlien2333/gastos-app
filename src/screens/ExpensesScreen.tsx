@@ -1,8 +1,8 @@
 import { useApp } from '@/context/AppContext';
 import React, { useState } from 'react';
 import {
-  Alert, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text,
-  TextInput, TouchableOpacity, useColorScheme, View,
+    KeyboardAvoidingView, Modal, Platform, StyleSheet, Text,
+    TextInput, TouchableOpacity, useColorScheme, View
 } from 'react-native';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
@@ -29,13 +29,13 @@ export default function ExpensesScreen() {
 
   const handleSave = () => {
     const num = parseFloat(amount.replace(',', '.'));
-    if (!num || num <= 0) return Alert.alert('Error', 'Ingresa un monto válido');
-    if (!description.trim()) return Alert.alert('Error', 'Ingresa una descripción');
-    if (!selectedCat) return Alert.alert('Error', 'Selecciona una categoría');
+    if (!num || num <= 0) return showAlert('Error', 'Ingresa un monto válido');
+    if (!description.trim()) return showAlert('Error', 'Ingresa una descripción');
+    if (!selectedCat) return showAlert('Error', 'Selecciona una categoría');
     addExpense({ amount: num, description: description.trim(), categoryId: selectedCat });
     setAmount('');
     setDescription('');
-    Alert.alert('✅ Guardado', 'Gasto registrado correctamente');
+    showAlert('✅ Guardado', 'Gasto registrado correctamente');
   };
 
   const openEdit = (cat: { id: string; name: string; emoji: string }) => {
@@ -53,7 +53,7 @@ export default function ExpensesScreen() {
   };
 
   const saveNewCat = () => {
-    if (!catName.trim()) return Alert.alert('Error', 'Ingresa un nombre');
+    if (!catName.trim()) return showAlert('Error', 'Ingresa un nombre');
     addCategory(catName.trim(), catEmoji || '📌', catColor);
     setCatName(''); setCatEmoji(''); setCatColor(catColors[0]);
     setAddCatModal(false);
