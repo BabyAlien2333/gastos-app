@@ -27,7 +27,7 @@ import ScheduleScanner from "./ScheduleScanner";
 
 // ─── Constantes 2026 ─────────────────────────────────────────────────────────
 const SMMLV_2026        = 1423500;
-const AUX_TRANSPORTE    = 200000;
+const AUX_TRANSPORTE_DEFAULT    = 200000;
 const SALUD_PCT         = 0.04;
 const PENSION_PCT       = 0.04;
 const HORAS_SEMANA_2026 = 42;
@@ -216,6 +216,8 @@ export default function SalaryCalculator() {
   const [modoHora,        setModoHora]        = useState(false);
   const [inclAuxTransp,   setInclAuxTransp]   = useState(true);
   const [inclDeducciones, setInclDeducciones] = useState(true);
+  const [auxTransporteInput, setAuxTransporteInput] = useState(String(AUX_TRANSPORTE_DEFAULT));
+  const auxTransporteValor = parseFloat(auxTransporteInput.replace(/\./g, "").replace(",", ".")) || AUX_TRANSPORTE_DEFAULT;
 
   // ── D1 Part Time: modo de ingreso del pago base ──────────────────────────
   // false = ingresar valor hora directamente
@@ -469,7 +471,7 @@ export default function SalaryCalculator() {
     const prima = (isPartTime && inclPrima) ? (baseParaPrima * diasPer / 360 / 2) : 0;
 
     const HORAS_MES_COMPLETO = 30 * horasDiarias;
-    const auxBase = (contrato.auxTransporte && inclAuxTransp) ? AUX_TRANSPORTE : 0;
+    const auxBase = (contrato.auxTransporte && inclAuxTransp) ? auxTransporteValor : 0;
     const aux = isPartTime
       ? (auxCompletoPT
           ? auxBase
@@ -510,7 +512,7 @@ export default function SalaryCalculator() {
       totalNeto: neto,
     };
   }, [days, calcDay, calcExtrasVencidas, isPartTime, valorHora, inclPrima,
-      horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario, auxCompletoPT]);
+    horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario, auxCompletoPT, auxTransporteValor]);
 
   // ── Resumen de horas por semana y por mes ──────────────────────────────────
   const resumenHoras = useMemo(() => {
@@ -1149,12 +1151,26 @@ export default function SalaryCalculator() {
                   <Text style={ss.toggleSub}>
                     {isPartTime
                       ? (auxCompletoPT
-                          ? `${formatCOP(AUX_TRANSPORTE)}/mes completo · full time`
-                          : `Proporcional a horas · base ${formatCOP(AUX_TRANSPORTE)}`)
-                      : `${formatCOP(AUX_TRANSPORTE)}/mes · solo si salario ≤ 2 SMMLV`}
+                          ? `${formatCOP(auxTransporteValor)}/mes completo · full time`
+                          : `Proporcional a horas · base ${formatCOP(auxTransporteValor)}`)
+                      : `${formatCOP(auxTransporteValor)}/mes · solo si salario ≤ 2 SMMLV`}
                   </Text>
                 </View>
                 <Switch value={inclAuxTransp} onValueChange={setInclAuxTransp} trackColor={{ true: "#4F46E5" }} />
+              </View>
+            )}
+            {contrato.auxTransporte && inclAuxTransp && (
+              <View style={{ marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#F3F4F6" }}>
+                <Text style={ss.cutLabel}>Valor del auxilio (COP)</Text>
+                <TextInput
+                  style={ss.cutInput}
+                  keyboardType="numeric"
+                  returnKeyType="done"
+                  blurOnSubmit
+                  value={auxTransporteInput}
+                  onChangeText={setAuxTransporteInput}
+                  placeholder={String(AUX_TRANSPORTE_DEFAULT)}
+                />
               </View>
             )}
             {isPartTime && contrato.auxTransporte && (
