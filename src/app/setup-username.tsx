@@ -1,7 +1,8 @@
+import { USERNAME_RE } from '@/firebase/AuthContext';
 import { auth, db } from '@/firebase/firebaseConfig';
 import { showAlert } from '@/utils/alert';
 import { useRouter } from 'expo-router';
-import { collection, doc, getDocs, query, updateDoc, where } from 'firebase/firestore';
+import { doc, getDoc, writeBatch } from 'firebase/firestore';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -25,38 +26,43 @@ export default function SetupUsernameScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleSave = async () => {
-    if (!username.trim()) {
+    const uname = username.trim().toLowerCase();
+
+    if (!uname) {
       return showAlert('Error', 'Ingresa un nombre de usuario');
     }
-    if (username.trim().length < 3) {
-      return showAlert('Error', 'El usuario debe tener al menos 3 caracteres');
-    }
-    if (!/^[a-zA-Z0-9_]+$/.test(username.trim())) {
-      return showAlert('Error', 'Solo letras, números y guión bajo (_)');
+    if (!USERNAME_RE.test(uname)) {
+      return showAlert('Error', 'Usa de 3 a 30 caracteres: solo letras, números y guión bajo (_)');
     }
 
     setLoading(true);
     try {
-      // Verificar que no esté en uso
-      const q = query(
-        collection(db, 'users'),
-        where('username', '==', username.toLowerCase().trim())
-      );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
+      const current = auth.currentUser;
+      if (!current || !current.email) throw new Error('No hay usuario autenticado');
+
+      // ¿Está libre? (lectura puntual del documento)
+      const taken = await getDoc(doc(db, 'usernames', uname));
+      if (taken.exists()) {
         return showAlert('Error', 'Ese nombre de usuario ya está en uso');
       }
 
-      // Guardar en Firestore
-      const uid = auth.currentUser?.uid;
-      if (!uid) throw new Error('No hay usuario autenticado');
-      await updateDoc(doc(db, 'users', uid), {
-        username: username.toLowerCase().trim(),
+      // Guardar perfil + reservar username de forma atómica
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'users', current.uid), { username: uname });
+      batch.set(doc(db, 'usernames', uname), {
+        uid: current.uid,
+        email: current.email.toLowerCase(),
       });
+      await batch.commit();
 
       router.replace('/(tabs)');
     } catch (e: any) {
-      showAlert('Error', e.message || 'No se pudo guardar el usuario');
+      console.error('setup-username:', e);
+      if (e?.code === 'permission-denied') {
+        showAlert('Error', 'Ese nombre de usuario ya está en uso');
+      } else {
+        showAlert('Error', 'No se pudo guardar el usuario. Intenta de nuevo.');
+      }
     } finally {
       setLoading(false);
     }
@@ -87,11 +93,12 @@ export default function SetupUsernameScreen() {
               placeholderTextColor={colors.placeholder}
               autoCapitalize="none"
               autoCorrect={false}
+              maxLength={30}
               autoFocus
             />
           </View>
           <Text style={[styles.hint, { color: colors.muted }]}>
-            Solo letras, números y _ · Mínimo 3 caracteres
+            Solo letras, números y _ · De 3 a 30 caracteres
           </Text>
 
           {username.length >= 3 && (

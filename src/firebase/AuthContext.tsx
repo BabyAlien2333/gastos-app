@@ -8,7 +8,7 @@ import {
   updateProfile,
   User,
 } from 'firebase/auth';
-import { collection, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { doc, getDoc, setDoc, writeBatch } from 'firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
 
 type AuthContextType = {
@@ -23,6 +23,36 @@ type AuthContextType = {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Mismas reglas que firestore.rules (3 a 30 caracteres: minúsculas, números y _)
+export const USERNAME_RE = /^[a-z0-9_]{3,30}$/;
+const normalizeUsername = (u: string) => u.trim().toLowerCase();
+
+const codedError = (code: string, message: string) => {
+  const err: any = new Error(message);
+  err.code = code;
+  return err;
+};
+
+/**
+ * Para usuarios creados antes del cambio: si tienen username en users/{uid}
+ * pero no existe usernames/{username}, lo crea. Así pueden entrar por usuario.
+ */
+const ensureUsernameIndex = async (u: User) => {
+  try {
+    if (!u.email) return;
+    const snap = await getDoc(doc(db, 'users', u.uid));
+    const username = snap.data()?.username;
+    if (!username) return;
+    const idxRef = doc(db, 'usernames', username);
+    const idx = await getDoc(idxRef);
+    if (!idx.exists()) {
+      await setDoc(idxRef, { uid: u.uid, email: u.email.toLowerCase() });
+    }
+  } catch (e) {
+    console.warn('ensureUsernameIndex:', e);
+  }
+};
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,36 +62,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsub = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
+      if (u) void ensureUsernameIndex(u);
     });
     return unsub;
   }, []);
 
   const register = async (email: string, password: string, name: string, username: string) => {
+    const uname = normalizeUsername(username);
+    if (!USERNAME_RE.test(uname)) {
+      throw codedError(
+        'auth/invalid-username',
+        'Usuario inválido: 3 a 30 caracteres, solo letras, números y _'
+      );
+    }
+
+    // 1) ¿Está libre? (lectura puntual de un documento, no listado)
+    const taken = await getDoc(doc(db, 'usernames', uname));
+    if (taken.exists()) {
+      throw codedError('auth/username-taken', 'El nombre de usuario ya está en uso');
+    }
+
     registeringRef.current = true;
     try {
-      const cred = await createUserWithEmailAndPassword(auth, email, password);
+      // 2) Crear la cuenta
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password);
       await updateProfile(cred.user, { displayName: name });
+      const emailNorm = (cred.user.email ?? email).trim().toLowerCase();
 
-      const q = query(
-        collection(db, 'users'),
-        where('username', '==', username.toLowerCase().trim())
-      );
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        await cred.user.delete();
-        registeringRef.current = false;
-        const err: any = new Error('El nombre de usuario ya está en uso');
-        err.code = 'auth/username-taken';
-        throw err;
-      }
-
-      await setDoc(doc(db, 'users', cred.user.uid), {
+      // 3) Guardar perfil + reservar el username de forma atómica
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'users', cred.user.uid), {
         name,
-        username: username.toLowerCase().trim(),
-        email,
+        username: uname,
+        email: emailNorm,
         monthlyIncome: 0,
         createdAt: new Date().toISOString(),
       });
+      batch.set(doc(db, 'usernames', uname), { uid: cred.user.uid, email: emailNorm });
+
+      try {
+        await batch.commit();
+      } catch (e: any) {
+        // Alguien reservó el username justo ahora: deshacer la cuenta recién creada
+        await cred.user.delete().catch(() => {});
+        if (e?.code === 'permission-denied' || e?.code === 'already-exists') {
+          throw codedError('auth/username-taken', 'El nombre de usuario ya está en uso');
+        }
+        throw e;
+      }
     } catch (e) {
       registeringRef.current = false;
       throw e;
@@ -69,23 +117,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const login = async (emailOrUsername: string, password: string) => {
-    const isEmail = emailOrUsername.includes('@');
-    if (isEmail) {
-      await signInWithEmailAndPassword(auth, emailOrUsername.trim(), password);
-    } else {
-      const q = query(
-        collection(db, 'users'),
-        where('username', '==', emailOrUsername.toLowerCase().trim())
-      );
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        const err: any = new Error('Usuario no encontrado');
-        err.code = 'auth/user-not-found';
-        throw err;
-      }
-      const userDoc = snap.docs[0].data();
-      await signInWithEmailAndPassword(auth, userDoc.email, password);
+    const value = emailOrUsername.trim();
+
+    if (value.includes('@')) {
+      await signInWithEmailAndPassword(auth, value, password);
+      return;
     }
+
+    // Login por usuario: se resuelve el correo desde usernames/{username}
+    const uname = normalizeUsername(value);
+    const snap = USERNAME_RE.test(uname) ? await getDoc(doc(db, 'usernames', uname)) : null;
+
+    if (!snap || !snap.exists()) {
+      // Mensaje neutro: no revelamos si el usuario existe o no
+      throw codedError('auth/invalid-credential', 'Credenciales incorrectas');
+    }
+    await signInWithEmailAndPassword(auth, snap.data().email, password);
   };
 
   const logout = async () => {
@@ -93,7 +140,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const resetPassword = async (email: string) => {
-    await sendPasswordResetEmail(auth, email);
+    await sendPasswordResetEmail(auth, email.trim());
   };
 
   return (

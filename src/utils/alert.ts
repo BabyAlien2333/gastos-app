@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
 
 type AlertButton = {
   text?: string;
@@ -7,14 +7,17 @@ type AlertButton = {
 };
 
 export function showAlert(title: string, message?: string, buttons?: AlertButton[]) {
+  // Móvil (iOS / Android): alerta nativa
   if (Platform.OS !== 'web') {
-    showAlert(title, message, buttons);
+    Alert.alert(title, message, buttons);
     return;
   }
 
   // Web: no existe Alert nativo, usamos window.alert / window.confirm
+  const text = message ? `${title}\n\n${message}` : title;
+
   if (!buttons || buttons.length <= 1) {
-    window.alert(message ? `${title}\n\n${message}` : title);
+    window.alert(text);
     buttons?.[0]?.onPress?.();
     return;
   }
@@ -24,8 +27,7 @@ export function showAlert(title: string, message?: string, buttons?: AlertButton
   const cancelBtn = buttons.find(b => b.style === 'cancel');
   const confirmBtn = buttons.find(b => b.style !== 'cancel') || buttons[buttons.length - 1];
 
-  const confirmed = window.confirm(message ? `${title}\n\n${message}` : title);
-  if (confirmed) {
+  if (window.confirm(text)) {
     confirmBtn?.onPress?.();
   } else {
     cancelBtn?.onPress?.();

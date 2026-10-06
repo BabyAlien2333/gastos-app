@@ -45,12 +45,15 @@ export default function LoginScreen() {
     try {
       await login(identifier.trim(), password);
     } catch (e: any) {
+      // El detalle técnico va a la consola, no al usuario
+      console.error('login error:', e?.code, e?.message);
       const msg =
-        e.code === 'auth/user-not-found' ? 'Usuario o correo no encontrado' :
-        e.code === 'auth/wrong-password' ? 'Contraseña incorrecta' :
         e.code === 'auth/invalid-email' ? 'Correo inválido' :
-        e.code === 'auth/invalid-credential' ? 'Credenciales incorrectas' :
-        'Error al iniciar sesión: ' + (e.message || e.code || JSON.stringify(e));
+        e.code === 'auth/too-many-requests' ? 'Demasiados intentos. Espera unos minutos e intenta de nuevo' :
+        e.code === 'auth/network-request-failed' ? 'Sin conexión. Revisa tu internet' :
+        // user-not-found, wrong-password e invalid-credential: mensaje único
+        // para no revelar si la cuenta existe
+        'Usuario o contraseña incorrectos';
       showAlert('Error', msg);
     } finally {
       setLoading(false);
@@ -58,30 +61,35 @@ export default function LoginScreen() {
   };
 
   const handleReset = async () => {
-    if (!resetEmail.trim()) {
+    const email = resetEmail.trim();
+    if (!email) {
       return showAlert('Error', 'Ingresa tu correo electrónico');
     }
-    if (!resetEmail.includes('@')) {
+    if (!email.includes('@')) {
       return showAlert('Error', 'Ingresa un correo válido');
     }
     setResetLoading(true);
     try {
-      await resetPassword(resetEmail.trim());
-      setResetModal(false);
-      setResetEmail('');
-      showAlert(
-        '✅ Correo enviado',
-        `Se envió el link de restablecimiento a ${resetEmail.trim()}. Revisa tu bandeja de entrada.`
-      );
+      await resetPassword(email);
     } catch (e: any) {
-      const msg =
-        e.code === 'auth/user-not-found' ? 'No existe una cuenta con ese correo' :
-        e.code === 'auth/invalid-email' ? 'Correo inválido' :
-        'Error al enviar el correo';
-      showAlert('Error', msg);
-    } finally {
-      setResetLoading(false);
+      console.error('reset error:', e?.code, e?.message);
+      if (e.code === 'auth/invalid-email') {
+        setResetLoading(false);
+        return showAlert('Error', 'Correo inválido');
+      }
+      if (e.code !== 'auth/user-not-found') {
+        setResetLoading(false);
+        return showAlert('Error', 'No se pudo enviar el correo. Intenta de nuevo');
+      }
+      // user-not-found: se trata igual que éxito para no revelar si la cuenta existe
     }
+    setResetLoading(false);
+    setResetModal(false);
+    setResetEmail('');
+    showAlert(
+      '✅ Solicitud enviada',
+      'Si ese correo está registrado, recibirás un enlace para restablecer tu contraseña. Revisa tu bandeja de entrada.'
+    );
   };
 
   return (
@@ -254,12 +262,13 @@ function getColors(dark: boolean) {
   };
 }
 
+// Las propiedades que solo existen en web (100vh, boxShadow en string, outline, cursor)
+// llevan "as any" para que TypeScript no rompa el tipo de TODO el StyleSheet.
 const styles = StyleSheet.create({
   container: { flex: 1 },
   // Web: fondo de página completo, contenido centrado vertical y horizontalmente
   containerWeb: {
-    // @ts-ignore - minHeight con '100vh' solo aplica en web
-    minHeight: '100vh',
+    minHeight: '100vh' as any,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -272,8 +281,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingVertical: 44,
     paddingHorizontal: 36,
-    // @ts-ignore - boxShadow es CSS puro, solo existe en web
-    boxShadow: '0 8px 30px rgba(0,0,0,0.08)',
+    boxShadow: '0 8px 30px rgba(0,0,0,0.08)' as any,
   },
   header: { alignItems: 'center', marginBottom: 40 },
   emoji: { fontSize: 56, marginBottom: 16 },
@@ -293,8 +301,7 @@ const styles = StyleSheet.create({
   input: { flex: 1, fontSize: 15 },
   // Web: quita el contorno azul feo del navegador al hacer focus
   inputWeb: {
-    // @ts-ignore - outlineStyle es CSS puro
-    outlineStyle: 'none',
+    outlineStyle: 'none' as any,
   },
   forgotBtn: { alignSelf: 'flex-end', marginTop: -4 },
   forgotText: { fontSize: 13, fontWeight: '500' },
@@ -304,8 +311,7 @@ const styles = StyleSheet.create({
   },
   // Web: cursor de mano al pasar sobre el botón
   btnWeb: {
-    // @ts-ignore - cursor es CSS puro
-    cursor: 'pointer',
+    cursor: 'pointer' as any,
   },
   btnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   divider: { flexDirection: 'row', alignItems: 'center', gap: 12 },
@@ -313,12 +319,11 @@ const styles = StyleSheet.create({
   dividerText: { fontSize: 13 },
   registerBtn: { borderWidth: 0.5, borderRadius: 14, height: 52, alignItems: 'center', justifyContent: 'center' },
   registerBtnWeb: {
-    // @ts-ignore - cursor es CSS puro
-    cursor: 'pointer',
+    cursor: 'pointer' as any,
   },
   registerText: { fontSize: 14 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  // Web: centra el modal en vez de pegarlo abajo (más de "app móvil")
+  // Web: centra el modal en vez de pegarlo abajo
   modalOverlayWeb: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -328,8 +333,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '100%',
     maxWidth: 400,
-    // @ts-ignore
-    boxShadow: '0 8px 30px rgba(0,0,0,0.12)',
+    boxShadow: '0 8px 30px rgba(0,0,0,0.12)' as any,
   },
   modalTitle: { fontSize: 17, fontWeight: '700', marginBottom: 8 },
   modalSubtitle: { fontSize: 13, marginBottom: 16, lineHeight: 18 },

@@ -27,7 +27,7 @@ function polarToXY(cx: number, cy: number, r: number, angle: number) {
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
-function buildArc(cx: number, cy: number, r: number, inner: number, startAngle: number, endAngle: number) {
+function buildArc(cx: number, cy: number, r: number, inner: number, startAngle: number, endAngle: number): string {
   const diff = endAngle - startAngle;
   if (diff >= 360) {
     const mid = startAngle + 180;
