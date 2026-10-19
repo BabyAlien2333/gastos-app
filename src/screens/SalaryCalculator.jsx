@@ -116,6 +116,13 @@ const fmtHrs = (v) => {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 };
 
+// Etiquetas para las semanas (ej: "12–18 oct")
+const MES_CORTO = (m) => MESES[m].label.slice(0, 3).toLowerCase();
+const labelSemana = (a, b) =>
+  a.month === b.month
+    ? `${a.day}–${b.day} ${MES_CORTO(a.month)}`
+    : `${a.day} ${MES_CORTO(a.month)} – ${b.day} ${MES_CORTO(b.month)}`;
+
 // Retorna la clave de semana ISO (año-Wsemana), lunes a domingo,
 // que es el estándar usado para jornada laboral en Colombia.
 const getISOWeekKey = (y, m, d) => {
@@ -151,6 +158,7 @@ const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => 
       compensatorioPor: null,
       compensatorioOtorgado: false,
       compensatorioTipo: null, // null=pendiente · "dia"=día libre otorgado · "dinero"=pagado en dinero
+      noProgramado: false,     // true = no trabaja y no se remunera
       festivo, domingo,
       especial: festivo || domingo,
       dayHours: 0, nightHours: 0,
@@ -166,11 +174,11 @@ const sugerirCompensatorios = (arr) => {
   const nuevo = arr.map((d) => ({ ...d }));
   for (let i = 0; i < nuevo.length; i++) {
     const d = nuevo[i];
-    if (d.especial && d.worked && !d.descanso && !d.compensatorioTipo) {
+    if (d.especial && d.worked && !d.descanso && !d.noProgramado && !d.compensatorioTipo) {
       let asignado = false;
       for (let j = i + 1; j < nuevo.length; j++) {
         const cand = nuevo[j];
-        if (cand.worked && !cand.especial && !cand.descanso && !cand.compensatorio) {
+        if (cand.worked && !cand.especial && !cand.descanso && !cand.compensatorio && !cand.noProgramado) {
           cand.compensatorio = true;
           cand.compensatorioPor = d.label;
           d.compensatorioTipo = "dia";
@@ -220,13 +228,8 @@ export default function SalaryCalculator() {
   const auxTransporteValor = parseFloat(auxTransporteInput.replace(/\./g, "").replace(",", ".")) || AUX_TRANSPORTE_DEFAULT;
 
   // ── D1 Part Time: modo de ingreso del pago base ──────────────────────────
-  // false = ingresar valor hora directamente
-  // true  = ingresar sueldo base mensual explícito (como en el desprendible) y
-  //         calcular el valor hora automáticamente, igual que en contratos full time
   const [modoSueldoPT,   setModoSueldoPT]   = useState(false);
   const [salarioBasePT,  setSalarioBasePT]  = useState("");
-  // Auxilio de transporte en D1 Part Time: proporcional a horas trabajadas (default)
-  // o completo/legal (como si fuera full time)
   const [auxCompletoPT,  setAuxCompletoPT]  = useState(false);
 
   const [showRecargos, setShowRecargos] = useState(false);
@@ -253,6 +256,7 @@ export default function SalaryCalculator() {
 
   const [days,        setDays]        = useState([]);
   const [expandedDay, setExpandedDay] = useState(null);
+  const [semanaSel,   setSemanaSel]   = useState(null); // null = todo el período
 
   const [modalContrato,  setModalContrato]  = useState(false);
   const [modalMesInicio, setModalMesInicio] = useState(false);
@@ -299,6 +303,7 @@ export default function SalaryCalculator() {
             ...nuevo[d.index],
             worked:     d.worked !== false,
             descanso:   d.descanso || false,
+            noProgramado: false,
             dayHours:   d.dayHours   || 0,
             nightHours: d.nightHours || 0,
           };
@@ -316,6 +321,7 @@ export default function SalaryCalculator() {
     setDays(generados);
     setCorteCargado(true);
     setExpandedDay(null);
+    setSemanaSel(null);
 
     setTimeout(() => {
       const balances = Object.values(savedBalances);
@@ -361,9 +367,6 @@ export default function SalaryCalculator() {
   const valorHoraCalc  = salario > 0 ? salario / (30 * horasDiarias) : 0;
   const valorHoraIngresado = parseFloat(valorHoraManual.replace(/\./g, "").replace(",", ".")) || 0;
 
-  // Sueldo base mensual explícito para D1 Part Time (p.ej. el "Sueldo/Salario básico"
-  // que aparece en el desprendible de pago) y su valor hora derivado, con la misma
-  // fórmula que se usa para contratos full time.
   const salarioBasePTNum = parseFloat(salarioBasePT.replace(/\./g, "").replace(",", ".")) || 0;
   const valorHoraPTCalc  = salarioBasePTNum > 0 ? salarioBasePTNum / (30 * horasDiarias) : 0;
 
@@ -382,7 +385,7 @@ export default function SalaryCalculator() {
   const jornadaContractualNum = Math.max(1, parseFloat(jornadaContractual) || HORAS_SEMANA_2026);
 
   const calcDay = useCallback((d) => {
-    if (!d.worked || d.descanso) return { total: 0, detail: {} };
+    if (!d.worked || d.descanso || d.noProgramado) return { total: 0, detail: {} };
 
     if (d.compensatorio) {
       const valorDiaComp = horasDiarias * valorHora;
@@ -430,15 +433,16 @@ export default function SalaryCalculator() {
   }, [contrato.mesVencido, extrasPeriodoAnterior, valorHora, pctExtDiaNum, pctExtNocNum, pctDomOrdNum]);
 
   const {
-    diasTrabajados, diasDescanso, diasCompensatorios, diasEspeciales,
+    diasTrabajados, diasDescanso, diasCompensatorios, diasEspeciales, diasNoProgramados,
     totalHorasPT, subtotalOrd, subtotalComp, subtotalCompDinero, subtotalExt,
     recargosEstePeriodo, totalRecargosEstePeriodo,
     horasDescansoRem, descRemunerado, diasPeriodo, primaLegal,
     auxTransp, devengadoBase, deducSalud, deducPension, totalDeduc,
     totalBruto, totalNeto,
   } = useMemo(() => {
-    const trabajados  = days.filter((d) => d.worked && !d.descanso && !d.compensatorio);
+    const trabajados  = days.filter((d) => d.worked && !d.descanso && !d.compensatorio && !d.noProgramado);
     const descanso    = days.filter((d) => d.descanso).length;
+    const noProg      = days.filter((d) => d.noProgramado).length;
     const compDiasArr = days.filter((d) => d.compensatorio);
     const compensatorios = compDiasArr.length;
     const especiales  = trabajados.filter((d) => d.especial).length;
@@ -492,6 +496,7 @@ export default function SalaryCalculator() {
       diasDescanso: descanso,
       diasCompensatorios: compensatorios,
       diasEspeciales: especiales,
+      diasNoProgramados: noProg,
       totalHorasPT: horasPT,
       subtotalOrd: subOrd,
       subtotalComp: subComp,
@@ -520,7 +525,7 @@ export default function SalaryCalculator() {
     const porMes = {};
 
     days.forEach((d) => {
-      if (!d.worked || d.descanso || d.compensatorio) return;
+      if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
       const horas = (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
       if (horas <= 0) return;
 
@@ -544,6 +549,30 @@ export default function SalaryCalculator() {
 
     return { semanas, meses };
   }, [days]);
+
+  // ── Semanas del período (lunes a domingo) ──────────────────────────────────
+  const semanasPeriodo = useMemo(() => {
+    const map = {};
+    days.forEach((d) => {
+      const k = getISOWeekKey(d.year, d.month, d.day);
+      if (!map[k]) map[k] = { key: k, numero: k.split("-W")[1], first: d, last: d };
+      map[k].last = d;
+    });
+    return Object.values(map);
+  }, [days]);
+
+  const resumenSemana = useMemo(() => {
+    if (!semanaSel) return null;
+    let horas = 0, total = 0, trabajados = 0;
+    days.forEach((d) => {
+      if (getISOWeekKey(d.year, d.month, d.day) !== semanaSel) return;
+      if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
+      horas += (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
+      total += calcDay(d).total;
+      trabajados++;
+    });
+    return { horas, total, trabajados };
+  }, [days, semanaSel, calcDay]);
 
   const labelCorte = `${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`;
 
@@ -571,6 +600,7 @@ export default function SalaryCalculator() {
         dias: diasTrabajados.length,
         especiales: diasEspeciales,
         compensatorios: diasCompensatorios,
+        noProgramados: diasNoProgramados,
         totalBruto,
         totalNeto,
         auxTransp,
@@ -630,11 +660,13 @@ export default function SalaryCalculator() {
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
       const snapshot = (b.daysSnapshot || []).map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
+        noProgramado: false,
         ...d,
       }));
       setDays(snapshot);
       setCorteCargado(true);
       setExpandedDay(null);
+      setSemanaSel(null);
     }, 300);
   };
 
@@ -642,19 +674,21 @@ export default function SalaryCalculator() {
   const exportPDF = async () => {
     const filas = days.map((d) => {
       const c = calcDay(d);
-      const tipo = d.compensatorio ? `Compensatorio (día libre${d.compensatorioPor ? ` · por ${d.compensatorioPor}` : ""})`
+      const tipo = d.noProgramado ? "No programado (sin pago)"
+        : d.compensatorio ? `Compensatorio (día libre${d.compensatorioPor ? ` · por ${d.compensatorioPor}` : ""})`
         : d.descanso ? "Descanso"
         : (d.especial && d.worked && !d.descanso && d.compensatorioTipo === "dinero") ? `${d.festivo ? "Festivo" : "Domingo"} · compensatorio pagado en dinero`
         : !d.worked ? "No trabajado"
         : d.festivo ? "Festivo" : d.domingo ? "Domingo" : "Normal";
-      const bg = d.compensatorio ? "#ede9fe" : d.descanso ? "#dbeafe" : !d.worked ? "#f3f4f6"
+      const bg = d.noProgramado ? "#e5e7eb"
+        : d.compensatorio ? "#ede9fe" : d.descanso ? "#dbeafe" : !d.worked ? "#f3f4f6"
         : d.festivo ? "#fde68a" : d.domingo ? "#fef9c3" : "#fff";
-      const mostrarHoras = d.worked && !d.descanso && !d.compensatorio;
+      const mostrarHoras = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
       return `<tr style="background:${bg}">
         <td>${d.label}</td><td>${tipo}</td>
         <td>${mostrarHoras ? fmtHrs(d.dayHours)   : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(d.nightHours) : "-"}</td>
-        <td style="font-weight:600">${(d.worked && !d.descanso) ? formatCOP(c.total) : "-"}</td>
+        <td style="font-weight:600">${(d.worked && !d.descanso && !d.noProgramado) ? formatCOP(c.total) : "-"}</td>
       </tr>`;
     }).join("");
 
@@ -714,6 +748,7 @@ export default function SalaryCalculator() {
       <div class="row"><span class="lbl">Días de descanso</span><span class="val">${diasDescanso}</span></div>
       <div class="row"><span class="lbl">Días compensatorios (día libre)</span><span class="val">${diasCompensatorios}</span></div>
       <div class="row"><span class="lbl">Días especiales</span><span class="val">${diasEspeciales}</span></div>
+      <div class="row"><span class="lbl">Días no programados (sin pago)</span><span class="val">${diasNoProgramados}</span></div>
       <div class="row"><span class="lbl">Subtotal ordinario</span><span class="val">${formatCOP(subtotalOrd)}</span></div>
       ${subtotalCompDinero > 0 ? `<div class="row"><span class="lbl">💰 Compensatorio pagado en dinero (incluido arriba)</span><span class="val">${formatCOP(subtotalCompDinero)}</span></div>` : ""}
       ${subtotalComp > 0 ? `<div class="row"><span class="lbl">🔄 Compensatorio · día libre otorgado</span><span class="val">${formatCOP(subtotalComp)}</span></div>` : ""}
@@ -742,7 +777,7 @@ export default function SalaryCalculator() {
     } catch (e) { showAlert("Error", e.message); }
   };
 
-  // ── Render día ────────────────────────────────────────────────────────────
+  // ── Acciones por día ──────────────────────────────────────────────────────
   const toggleWorked = useCallback((i) => setDays((prev) => {
     const nuevo = prev.map((d) => ({ ...d }));
     const item = nuevo[i];
@@ -760,7 +795,37 @@ export default function SalaryCalculator() {
     const item = nuevo[i];
     item.descanso = !item.descanso;
     item.compensatorio = false;
+    item.noProgramado = false;
     item.worked = true;
+    return nuevo;
+  }), []);
+
+  const toggleNoProgramado = useCallback((i) => setDays((prev) => {
+    const nuevo = prev.map((d) => ({ ...d }));
+    const item = nuevo[i];
+
+    // Volver a programar el día
+    if (item.noProgramado) {
+      item.noProgramado = false;
+      item.worked = true;
+      return nuevo;
+    }
+
+    // Si era día libre compensatorio, liberar el festivo/domingo que lo originó
+    if (item.compensatorio && item.compensatorioPor) {
+      const origen = nuevo.find((d) => d.label === item.compensatorioPor);
+      if (origen) { origen.compensatorioTipo = null; origen.compensatorioOtorgado = false; }
+    }
+    // Si era festivo/domingo con compensatorio asignado, liberarlo
+    if (item.especial && item.compensatorioTipo) liberarCompensatorioDe(nuevo, item.label);
+
+    item.compensatorio = false;
+    item.compensatorioPor = null;
+    item.compensatorioTipo = null;
+    item.compensatorioOtorgado = false;
+    item.descanso = false;
+    item.worked = true;
+    item.noProgramado = true;
     return nuevo;
   }), []);
 
@@ -779,8 +844,9 @@ export default function SalaryCalculator() {
     } else {
       item.compensatorio = true;
       item.descanso = false;
+      item.noProgramado = false;
       item.worked = true;
-      const origen = nuevo.find((d) => d.especial && d.worked && !d.descanso && !d.compensatorioTipo);
+      const origen = nuevo.find((d) => d.especial && d.worked && !d.descanso && !d.noProgramado && !d.compensatorioTipo);
       if (origen) {
         origen.compensatorioTipo = "dia";
         origen.compensatorioOtorgado = true;
@@ -793,14 +859,14 @@ export default function SalaryCalculator() {
   const toggleCompensatorioTipo = useCallback((i) => setDays((prev) => {
     const nuevo = prev.map((d) => ({ ...d }));
     const origen = nuevo[i];
-    if (!origen.especial || !origen.worked || origen.descanso) return prev;
+    if (!origen.especial || !origen.worked || origen.descanso || origen.noProgramado) return prev;
 
     if (origen.compensatorioTipo === "dinero") {
       let asignado = false;
       for (let j = 0; j < nuevo.length; j++) {
         if (j === i) continue;
         const cand = nuevo[j];
-        if (cand.worked && !cand.especial && !cand.descanso && !cand.compensatorio) {
+        if (cand.worked && !cand.especial && !cand.descanso && !cand.compensatorio && !cand.noProgramado) {
           cand.compensatorio = true;
           cand.compensatorioPor = origen.label;
           origen.compensatorioTipo = "dia";
@@ -826,18 +892,33 @@ export default function SalaryCalculator() {
 
   const updateHours = useCallback((i, field, val) => setDays((p) => p.map((d, idx) => idx === i ? { ...d, [field]: val } : d)), []);
 
+  // ── Render día ────────────────────────────────────────────────────────────
   const renderDay = (item, index) => {
     const isExp = expandedDay === index;
     const cost  = calcDay(item);
     const isEsp = item.especial && !item.descanso && !item.compensatorio;
 
+    if (item.noProgramado) {
+      return (
+        <View key={index} style={ss.dayRowNoProg}>
+          <View style={{ flex: 1 }}>
+            <Text style={ss.dayNumNoProg}>{`⛔ ${item.label}`}</Text>
+            <Text style={ss.dayStatusOff}>No programado (sin remuneración)</Text>
+          </View>
+          <TouchableOpacity onPress={() => toggleNoProgramado(index)} style={ss.toggleBtn}>
+            <Text style={ss.toggleBtnText}>Programar</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
     if (item.compensatorio) {
       return (
         <View key={index} style={ss.dayRowCompensatorio}>
           <View style={{ flex: 1 }}>
-            <Text style={ss.dayNumCompensatorio}>🔄 {item.label}</Text>
+            <Text style={ss.dayNumCompensatorio}>{`🔄 ${item.label}`}</Text>
             <Text style={ss.dayStatusOff}>
-              Día libre compensatorio (remunerado){item.compensatorioPor ? ` · por ${item.compensatorioPor}` : ""}
+              {`Día libre compensatorio (remunerado)${item.compensatorioPor ? ` · por ${item.compensatorioPor}` : ""}`}
             </Text>
           </View>
           <Text style={ss.dayCostComp}>{formatCOP(cost.total)}</Text>
@@ -852,7 +933,7 @@ export default function SalaryCalculator() {
       return (
         <View key={index} style={ss.dayRowDescanso}>
           <View style={{ flex: 1 }}>
-            <Text style={ss.dayNumDescanso}>🛌 {item.label}</Text>
+            <Text style={ss.dayNumDescanso}>{`🛌 ${item.label}`}</Text>
             <Text style={ss.dayStatusOff}>Día de descanso (remunerado)</Text>
           </View>
           <TouchableOpacity onPress={() => toggleDescanso(index)} style={ss.toggleBtn}>
@@ -871,6 +952,9 @@ export default function SalaryCalculator() {
       );
     }
 
+    const horasCompactas =
+      `${item.dayHours > 0 ? '☀️' + fmtHrs(item.dayHours) + ' ' : ''}${item.nightHours > 0 ? '🌙' + fmtHrs(item.nightHours) : ''}`;
+
     return (
       <View key={index} style={[ss.dayRow, isEsp && ss.dayRowEsp]}>
         <TouchableOpacity style={ss.dayRowHeader}
@@ -883,7 +967,7 @@ export default function SalaryCalculator() {
             </View>
             {isEsp && <Text style={ss.recargoBadge}>Recargo dominical/festivo aplicado</Text>}
             {isEsp && item.compensatorioTipo === "dia" && (
-              <Text style={ss.recargoBadgeComp}>🔄 Compensa con: {item.compensatorioPor}</Text>
+              <Text style={ss.recargoBadgeComp}>{`🔄 Compensa con: ${item.compensatorioPor}`}</Text>
             )}
             {isEsp && item.compensatorioTipo === "dinero" && (
               <Text style={ss.recargoBadgeMoney}>💰 Compensatorio pagado en dinero</Text>
@@ -891,10 +975,7 @@ export default function SalaryCalculator() {
             {isEsp && !item.compensatorioTipo && (
               <Text style={ss.recargoBadgeWarn}>⚠️ Compensatorio pendiente</Text>
             )}
-            <Text style={ss.hoursCompact}>
-              {item.dayHours   > 0 ? `☀️${fmtHrs(item.dayHours)} ` : ""}
-              {item.nightHours > 0 ? `🌙${fmtHrs(item.nightHours)}` : ""}
-            </Text>
+            <Text style={ss.hoursCompact}>{horasCompactas}</Text>
           </View>
           <Text style={[ss.dayCost, isEsp && ss.dayCostEsp]}>{formatCOP(cost.total)}</Text>
           <Text style={ss.expandIcon}>{isExp ? "▲" : "▼"}</Text>
@@ -910,6 +991,9 @@ export default function SalaryCalculator() {
             )}
             <TouchableOpacity onPress={() => toggleDescanso(index)} style={ss.descansoBtn}>
               <Text style={ss.descansoBtnText}>🛌</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => toggleNoProgramado(index)} style={ss.noProgBtn}>
+              <Text style={ss.descansoBtnText}>⛔</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => toggleWorked(index)} style={ss.removeBtn}>
               <Text style={ss.removeBtnText}>✕</Text>
@@ -984,13 +1068,13 @@ export default function SalaryCalculator() {
           {/* Header */}
           <View style={ss.header}>
             <Text style={ss.headerTitle}>💰 Nómina Colombia 2026</Text>
-            <Text style={ss.headerSub}>Ley 2101 · {HORAS_SEMANA_2026}h/sem · CST actualizado</Text>
+            <Text style={ss.headerSub}>{`Ley 2101 · ${HORAS_SEMANA_2026}h/sem · CST actualizado`}</Text>
             {loadingBalances ? (
               <ActivityIndicator color="#C7D2FE" style={{ marginTop: 10 }} />
             ) : balanceList.length > 0 && (
               <TouchableOpacity style={ss.headerBalanceBtn} onPress={() => setBalanceModal(true)}>
                 <Text style={ss.headerBalanceBtnText}>
-                  📊 Balance ({balanceList.length} período{balanceList.length > 1 ? "s" : ""}) · ☁️ sincronizado
+                  {`📊 Balance (${balanceList.length} período${balanceList.length > 1 ? "s" : ""}) · ☁️ sincronizado`}
                 </Text>
               </TouchableOpacity>
             )}
@@ -1000,7 +1084,7 @@ export default function SalaryCalculator() {
           <View style={ss.card}>
             <Text style={ss.sectionTitle}>Tipo de contrato</Text>
             <TouchableOpacity style={ss.selectBtn} onPress={() => setModalContrato(true)}>
-              <Text style={ss.selectBtnText}>{contrato.icon} {contrato.label}</Text>
+              <Text style={ss.selectBtnText}>{`${contrato.icon} ${contrato.label}`}</Text>
             </TouchableOpacity>
             <Text style={ss.contractDesc}>{contrato.desc}</Text>
             {contrato.id === "servicios" && (
@@ -1010,19 +1094,18 @@ export default function SalaryCalculator() {
             )}
           </View>
 
-          {/* Jornada contractual (para el resumen de horas) */}
+          {/* Jornada contractual */}
           <View style={ss.card}>
             <Text style={ss.sectionTitle}>⏱️ Jornada semanal del contrato</Text>
             <Text style={ss.cutDesc}>
-              Depende de tu contrato — ajústala para que la alerta de horas semanales sea correcta.
-              No afecta la liquidación (que sigue la Ley 2101: {HORAS_SEMANA_2026}h/sem).
+              {`Depende de tu contrato — ajústala para que la alerta de horas semanales sea correcta. No afecta la liquidación (que sigue la Ley 2101: ${HORAS_SEMANA_2026}h/sem).`}
             </Text>
             <View style={ss.domRow}>
               <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
                 returnKeyType="done" blurOnSubmit
                 value={jornadaContractual} onChangeText={setJornadaContractual} />
               <View style={ss.domInfo}>
-                <Text style={ss.domInfoText}>{jornadaContractualNum}h / semana</Text>
+                <Text style={ss.domInfoText}>{`${jornadaContractualNum}h / semana`}</Text>
                 <Text style={ss.domInfoSub}>según tu contrato</Text>
               </View>
             </View>
@@ -1057,7 +1140,7 @@ export default function SalaryCalculator() {
                     {valorHora > 0 && (
                       <View style={ss.infoRow}>
                         <Text style={ss.infoText}>Valor hora ingresado</Text>
-                        <Text style={ss.infoVal}>{formatCOP(valorHora)}/hora</Text>
+                        <Text style={ss.infoVal}>{`${formatCOP(valorHora)}/hora`}</Text>
                       </View>
                     )}
                   </>
@@ -1081,7 +1164,7 @@ export default function SalaryCalculator() {
                     {salarioBasePTNum > 0 && (
                       <View style={ss.infoRow}>
                         <Text style={ss.infoText}>Valor hora calculado</Text>
-                        <Text style={ss.infoVal}>{formatCOP(valorHoraPTCalc)}/hora</Text>
+                        <Text style={ss.infoVal}>{`${formatCOP(valorHoraPTCalc)}/hora`}</Text>
                       </View>
                     )}
                   </>
@@ -1112,12 +1195,12 @@ export default function SalaryCalculator() {
                     {salario > 0 && (
                       <View style={ss.infoRow}>
                         <Text style={ss.infoText}>Valor hora calculado</Text>
-                        <Text style={ss.infoVal}>{formatCOP(valorHoraCalc)}/hora</Text>
+                        <Text style={ss.infoVal}>{`${formatCOP(valorHoraCalc)}/hora`}</Text>
                       </View>
                     )}
                     {salario > 0 && salario < SMMLV_2026 && (
                       <View style={ss.alertBox}>
-                        <Text style={ss.alertText}>⚠️ Por debajo del SMMLV 2026 ({formatCOP(SMMLV_2026)})</Text>
+                        <Text style={ss.alertText}>{`⚠️ Por debajo del SMMLV 2026 (${formatCOP(SMMLV_2026)})`}</Text>
                       </View>
                     )}
                   </>
@@ -1136,7 +1219,7 @@ export default function SalaryCalculator() {
                     {valorHoraIngresado > 0 && (
                       <View style={ss.infoRow}>
                         <Text style={ss.infoText}>Valor hora ingresado</Text>
-                        <Text style={ss.infoVal}>{formatCOP(valorHoraIngresado)}/hora</Text>
+                        <Text style={ss.infoVal}>{`${formatCOP(valorHoraIngresado)}/hora`}</Text>
                       </View>
                     )}
                   </>
@@ -1224,7 +1307,7 @@ export default function SalaryCalculator() {
                           returnKeyType="done" blurOnSubmit value={val} onChangeText={setter} />
                         <Text style={ss.recargoInputSuffix}>%</Text>
                       </View>
-                      <Text style={ss.recargoMult}>×{(1 + (parseFloat(val) || parseFloat(def)) / 100).toFixed(2)}</Text>
+                      <Text style={ss.recargoMult}>{`×${(1 + (parseFloat(val) || parseFloat(def)) / 100).toFixed(2)}`}</Text>
                     </View>
                   ))}
                 </View>
@@ -1247,7 +1330,7 @@ export default function SalaryCalculator() {
                 <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
                   returnKeyType="done" blurOnSubmit value={domPct} onChangeText={setDomPct} />
                 <View style={ss.domInfo}>
-                  <Text style={ss.domInfoText}>×{(1 + (parseFloat(domPct) || 80) / 100).toFixed(2)}</Text>
+                  <Text style={ss.domInfoText}>{`×${(1 + (parseFloat(domPct) || 80) / 100).toFixed(2)}`}</Text>
                   <Text style={ss.domInfoSub}>Tu liquidación muestra 80%</Text>
                 </View>
               </View>
@@ -1259,9 +1342,9 @@ export default function SalaryCalculator() {
                   returnKeyType="done" blurOnSubmit value={diasXDescanso} onChangeText={setDiasXDescanso} />
                 <View style={ss.domInfo}>
                   {diasTrabajados.length > 0 && (
-                    <Text style={ss.domInfoText}>{fmtHrs(horasDescansoRem)} de descanso rem.</Text>
+                    <Text style={ss.domInfoText}>{`${fmtHrs(horasDescansoRem)} de descanso rem.`}</Text>
                   )}
-                  <Text style={ss.domInfoSub}>= {formatCOP(descRemunerado)}</Text>
+                  <Text style={ss.domInfoSub}>{`= ${formatCOP(descRemunerado)}`}</Text>
                 </View>
               </View>
               <View style={ss.dividerLight} />
@@ -1314,7 +1397,7 @@ export default function SalaryCalculator() {
               </View>
             </View>
             <TouchableOpacity style={ss.applyBtn} onPress={cargarCorte}>
-              <Text style={ss.applyBtnText}>📅 Cargar período {diaInicio}/{pad(mesInicio + 1)} → {diaFin}/{pad(mesFin + 1)}</Text>
+              <Text style={ss.applyBtnText}>{`📅 Cargar período ${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`}</Text>
             </TouchableOpacity>
           </View>
 
@@ -1354,6 +1437,7 @@ export default function SalaryCalculator() {
               {[["Normal","#fff","#E5E7EB"],["Domingo","#FEF08A",null],
                 ["Festivo","#FDE68A","#F59E0B"],["Descanso","#DBEAFE","#93C5FD"],
                 ["Compensatorio","#DDD6FE","#8B5CF6"],
+                ["No programado","#E5E7EB","#9CA3AF"],
                 ["No trabajado","#F3F4F6","#E5E7EB"]].map(([l,bg,border])=>(
                 <View key={l} style={ss.legendItem}>
                   <View style={[ss.legendDot,{backgroundColor:bg,borderColor:border||bg,borderWidth:border?1:0}]}/>
@@ -1368,7 +1452,7 @@ export default function SalaryCalculator() {
             <View style={ss.card}>
               <Text style={ss.sectionTitle}>⏱️ Total de horas</Text>
               <Text style={ss.cutDesc}>
-                Según jornada de tu contrato: {jornadaContractualNum}h/semana
+                {`Según jornada de tu contrato: ${jornadaContractualNum}h/semana`}
               </Text>
 
               <Text style={ss.groupLabel}>Por semana</Text>
@@ -1378,7 +1462,7 @@ export default function SalaryCalculator() {
                   return (
                     <View key={s.key} style={ss.desgloseRow}>
                       <Text style={[ss.desgloseLabel, excede && ss.desgloseLabelWarn]}>
-                        Semana {s.numero}{excede ? " ⚠️" : ""}
+                        {`Semana ${s.numero}${excede ? " ⚠️" : ""}`}
                       </Text>
                       <Text style={[ss.desgloseValue, excede && ss.desgloseLabelWarn]}>
                         {fmtHrs(s.horas)}
@@ -1404,18 +1488,55 @@ export default function SalaryCalculator() {
           {corteCargado && days.length > 0 && (
             <View style={ss.card}>
               <View style={{ flexDirection:"row", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                <Text style={ss.sectionTitle}>
-                  Días · {diasTrabajados.length} trabajados · {diasDescanso} descanso · {diasCompensatorios} comp.
+                <Text style={[ss.sectionTitle, { flex: 1 }]}>
+                  {`Días · ${diasTrabajados.length} trabajados · ${diasDescanso} descanso · ${diasCompensatorios} comp. · ${diasNoProgramados} no prog.`}
                 </Text>
                 <TouchableOpacity style={ss.scanBtn} onPress={() => setScannerVisible(true)}>
                   <Text style={ss.scanBtnText}>📷 Escanear</Text>
                 </TouchableOpacity>
               </View>
               <Text style={ss.cutDesc}>
-                Toca 🛌 descanso · ✕ no trabajado · en domingo/festivo trabajado, 💰/🔄 alterna entre
+                Toca 🛌 descanso · ⛔ no programado (no trabaja y no se paga) · ✕ no trabajado · en domingo/festivo trabajado, 💰/🔄 alterna entre
                 pagarlo en dinero u otorgar día libre · en un día ordinario, 🔄 lo marca como ese día libre
               </Text>
-              {days.map((item, index) => renderDay(item, index))}
+
+              {/* Selector de semanas */}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+                <View style={{ flexDirection: "row", gap: 8 }}>
+                  <TouchableOpacity
+                    style={[ss.weekChip, !semanaSel && ss.weekChipActive]}
+                    onPress={() => setSemanaSel(null)}>
+                    <Text style={[ss.weekChipText, !semanaSel && ss.weekChipTextActive]}>Todo</Text>
+                  </TouchableOpacity>
+                  {semanasPeriodo.map((s) => (
+                    <TouchableOpacity key={s.key}
+                      style={[ss.weekChip, semanaSel === s.key && ss.weekChipActive]}
+                      onPress={() => setSemanaSel(s.key)}>
+                      <Text style={[ss.weekChipText, semanaSel === s.key && ss.weekChipTextActive]}>
+                        {`Sem ${s.numero}`}
+                      </Text>
+                      <Text style={[ss.weekChipSub, semanaSel === s.key && ss.weekChipTextActive]}>
+                        {labelSemana(s.first, s.last)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+
+              {resumenSemana && (
+                <View style={[ss.infoRow, { marginBottom: 10 }]}>
+                  <Text style={ss.infoText}>
+                    {`${resumenSemana.trabajados} días · ${fmtHrs(resumenSemana.horas)}`}
+                  </Text>
+                  <Text style={ss.infoVal}>{formatCOP(resumenSemana.total)}</Text>
+                </View>
+              )}
+
+              {days.map((item, index) =>
+                semanaSel && getISOWeekKey(item.year, item.month, item.day) !== semanaSel
+                  ? null
+                  : renderDay(item, index)
+              )}
             </View>
           )}
 
@@ -1423,31 +1544,35 @@ export default function SalaryCalculator() {
           {corteCargado && (
             <View style={ss.totalsCard}>
               <Text style={ss.totalsTitle}>📊 Liquidación del período</Text>
-              <Text style={ss.totalsSubtitle}>{contrato.icon} {contrato.label} · {labelCorte}</Text>
+              <Text style={ss.totalsSubtitle}>{`${contrato.icon} ${contrato.label} · ${labelCorte}`}</Text>
 
               <View style={ss.totalRow}>
                 <Text style={ss.totalLabel}>Días trabajados</Text>
                 <Text style={ss.totalValue}>
-                  {diasTrabajados.length}{isPartTime ? ` · ${fmtHrs(totalHorasPT)} total` : " días"}
+                  {`${diasTrabajados.length}${isPartTime ? ` · ${fmtHrs(totalHorasPT)} total` : " días"}`}
                 </Text>
               </View>
               <View style={ss.totalRow}>
                 <Text style={ss.totalLabel}>Días de descanso</Text>
-                <Text style={ss.totalValue}>{diasDescanso} días</Text>
+                <Text style={ss.totalValue}>{`${diasDescanso} días`}</Text>
               </View>
               <View style={ss.totalRow}>
                 <Text style={ss.totalLabel}>Días compensatorios</Text>
-                <Text style={ss.totalValue}>{diasCompensatorios} días</Text>
+                <Text style={ss.totalValue}>{`${diasCompensatorios} días`}</Text>
               </View>
               <View style={ss.totalRow}>
                 <Text style={ss.totalLabel}>Días especiales</Text>
-                <Text style={ss.totalValue}>{diasEspeciales} días</Text>
+                <Text style={ss.totalValue}>{`${diasEspeciales} días`}</Text>
+              </View>
+              <View style={ss.totalRow}>
+                <Text style={ss.totalLabel}>Días no programados</Text>
+                <Text style={ss.totalValue}>{`${diasNoProgramados} días`}</Text>
               </View>
 
               <View style={ss.divider} />
 
               <View style={ss.totalRow}>
-                <Text style={ss.totalLabel}>1088 · Salario horas ({fmtHrs(totalHorasPT)})</Text>
+                <Text style={ss.totalLabel}>{`1088 · Salario horas (${fmtHrs(totalHorasPT)})`}</Text>
                 <Text style={ss.totalValue}>{formatCOP(subtotalOrd)}</Text>
               </View>
               {subtotalExt > 0 && (
@@ -1470,13 +1595,13 @@ export default function SalaryCalculator() {
               )}
               {descRemunerado > 0 && (
                 <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>1414 · Descanso remunerado PT ({fmtHrs(horasDescansoRem)})</Text>
+                  <Text style={ss.totalLabel}>{`1414 · Descanso remunerado PT (${fmtHrs(horasDescansoRem)})`}</Text>
                   <Text style={ss.totalValue}>{formatCOP(descRemunerado)}</Text>
                 </View>
               )}
               {primaLegal > 0 && (
                 <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>1230 · Prima legal ({diasPeriodo} días)</Text>
+                  <Text style={ss.totalLabel}>{`1230 · Prima legal (${diasPeriodo} días)`}</Text>
                   <Text style={ss.totalValue}>{formatCOP(primaLegal)}</Text>
                 </View>
               )}
@@ -1497,7 +1622,7 @@ export default function SalaryCalculator() {
                 {[["(-) Salud 4%", deducSalud], ["(-) Pensión 4%", deducPension]].map(([l, v]) => (
                   <View key={l} style={ss.totalRow}>
                     <Text style={ss.totalLabel}>{l}</Text>
-                    <Text style={[ss.totalValue, { color: "#FCA5A5" }]}>-{formatCOP(v)}</Text>
+                    <Text style={[ss.totalValue, { color: "#FCA5A5" }]}>{`-${formatCOP(v)}`}</Text>
                   </View>
                 ))}
               </>)}
@@ -1612,10 +1737,9 @@ export default function SalaryCalculator() {
                       <View style={{ flex: 1 }}>
                         <Text style={ss.balanceMes}>{b.corte}</Text>
                         <Text style={ss.balanceDetail}>
-                          {TIPOS_CONTRATO.find(t => t.id === b.contrato)?.label || b.contrato}
-                          {" · "}{b.dias} días · {b.fecha}
+                          {`${TIPOS_CONTRATO.find(t => t.id === b.contrato)?.label || b.contrato} · ${b.dias} días · ${b.fecha}`}
                         </Text>
-                        <Text style={ss.balanceDetail}>Bruto: {formatCOP(b.totalBruto)}</Text>
+                        <Text style={ss.balanceDetail}>{`Bruto: ${formatCOP(b.totalBruto)}`}</Text>
                       </View>
                       <View style={{ alignItems: "flex-end" }}>
                         <Text style={ss.balanceTotal}>{formatCOP(b.totalNeto)}</Text>
@@ -1720,12 +1844,14 @@ const ss = StyleSheet.create({
   dayRowOff:     { borderWidth:1, borderColor:"#F3F4F6", borderRadius:10, padding:10, marginBottom:6, backgroundColor:"#F9FAFB", flexDirection:"row", alignItems:"center", justifyContent:"space-between" },
   dayRowDescanso:{ borderWidth:1, borderColor:"#93C5FD", borderRadius:10, padding:10, marginBottom:6, backgroundColor:"#EFF6FF", flexDirection:"row", alignItems:"center" },
   dayRowCompensatorio:{ borderWidth:1, borderColor:"#A78BFA", borderRadius:10, padding:10, marginBottom:6, backgroundColor:"#F5F3FF", flexDirection:"row", alignItems:"center" },
+  dayRowNoProg: { borderWidth:1, borderColor:"#9CA3AF", borderRadius:10, padding:10, marginBottom:6, backgroundColor:"#E5E7EB", flexDirection:"row", alignItems:"center" },
   dayRowHeader:  { flexDirection:"row", alignItems:"center", padding:10 },
   dayNum:        { fontSize:13, fontWeight:"600", color:"#374151" },
   dayNumOff:     { fontSize:13, color:"#9CA3AF" },
   dayNumDescanso:{ fontSize:13, fontWeight:"600", color:"#1D4ED8" },
   dayNumCompensatorio:{ fontSize:13, fontWeight:"600", color:"#7C3AED" },
-  dayStatusOff:  { fontSize:11, color:"#D1D5DB" },
+  dayNumNoProg:  { fontSize:13, fontWeight:"600", color:"#4B5563" },
+  dayStatusOff:  { fontSize:11, color:"#9CA3AF" },
   badge:         { backgroundColor:"#FEF08A", borderRadius:6, paddingHorizontal:5, paddingVertical:1 },
   badgeText:     { fontSize:9, color:"#92400E", fontWeight:"600" },
   recargoBadge:  { fontSize:10, color:"#B45309", marginTop:1 },
@@ -1741,10 +1867,16 @@ const ss = StyleSheet.create({
   descansoBtnText:{ fontSize:12 },
   compBtn:       { padding:4, backgroundColor:"#F5F3FF", borderRadius:6 },
   compBtnText:   { fontSize:12 },
+  noProgBtn:     { padding:4, backgroundColor:"#F3F4F6", borderRadius:6 },
   removeBtn:     { padding:4 },
   removeBtnText: { color:"#EF4444", fontSize:14, fontWeight:"700" },
   toggleBtn:     { backgroundColor:"#DBEAFE", borderRadius:8, paddingHorizontal:10, paddingVertical:6 },
   toggleBtnText: { fontSize:11, color:"#1D4ED8", fontWeight:"600" },
+  weekChip:      { paddingHorizontal:14, paddingVertical:8, borderRadius:12, borderWidth:1, borderColor:"#E5E7EB", backgroundColor:"#FAFAFA", alignItems:"center", justifyContent:"center" },
+  weekChipActive:{ backgroundColor:"#4F46E5", borderColor:"#4F46E5" },
+  weekChipText:  { fontSize:13, fontWeight:"700", color:"#374151" },
+  weekChipSub:   { fontSize:10, color:"#6B7280", marginTop:1 },
+  weekChipTextActive: { color:"#fff" },
   expandedContent: { padding:10, borderTopWidth:1, borderTopColor:"#F3F4F6", backgroundColor:"#fff" },
   groupLabel:    { fontSize:12, fontWeight:"600", color:"#6B7280", marginBottom:6 },
   desglose:      { backgroundColor:"#F8F9FF", borderRadius:8, padding:10, marginTop:10 },
