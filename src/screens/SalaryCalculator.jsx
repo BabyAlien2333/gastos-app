@@ -123,17 +123,21 @@ const labelSemana = (a, b) =>
     ? `${a.day}–${b.day} ${MES_CORTO(a.month)}`
     : `${a.day} ${MES_CORTO(a.month)} – ${b.day} ${MES_CORTO(b.month)}`;
 
-// Retorna la clave de semana ISO (año-Wsemana), lunes a domingo,
-// que es el estándar usado para jornada laboral en Colombia.
-const getISOWeekKey = (y, m, d) => {
-  const date = new Date(Date.UTC(y, m, d));
-  const dayNum = (date.getUTCDay() + 6) % 7; // Lunes=0 ... Domingo=6
-  date.setUTCDate(date.getUTCDate() - dayNum + 3);
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
-  const week = 1 + Math.round(
-    ((date - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7
-  );
-  return `${date.getUTCFullYear()}-W${pad(week)}`;
+// Días de la semana para elegir con cuál empieza (v = valor de Date.getDay())
+const DIAS_SEMANA = [
+  { l: "Lun", v: 1 }, { l: "Mar", v: 2 }, { l: "Mié", v: 3 },
+  { l: "Jue", v: 4 }, { l: "Vie", v: 5 }, { l: "Sáb", v: 6 }, { l: "Dom", v: 0 },
+];
+
+// Semana dentro del mes. La semana 1 puede ser parcial (desde el día 1 hasta
+// el día anterior al primer "inicioSemana"). Nunca cruza de un mes a otro.
+const getSemanaMes = (y, m, d, inicioSemana = 1) => {
+  const firstDow = new Date(y, m, 1).getDay();
+  const parcial = (inicioSemana - firstDow + 7) % 7; // días de la semana 1 parcial
+  const numero = parcial === 0
+    ? 1 + Math.floor((d - 1) / 7)
+    : (d <= parcial ? 1 : 2 + Math.floor((d - parcial - 1) / 7));
+  return { key: `${y}-${pad(m + 1)}-S${numero}`, numero };
 };
 
 const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => {
@@ -216,6 +220,27 @@ const Stepper = ({ label, value, onChange, small }) => (
   </View>
 );
 
+// ─── Filas de resumen (semana / mes) ─────────────────────────────────────────
+const Fila = ({ l, v, color }) => (
+  <View style={ss.desgloseRow}>
+    <Text style={[ss.desgloseLabel, color && { color }]}>{l}</Text>
+    <Text style={[ss.desgloseValue, color && { color }]}>{v}</Text>
+  </View>
+);
+
+const FilasAgg = ({ a }) => (
+  <>
+    <Fila l="☀️ Ordinarias" v={fmtHrs(a.ordDia + a.ordNoche)} />
+    {a.ordNoche > 0 && <Fila l={`🌙 Nocturnas (${fmtHrs(a.ordNoche)}) · recargo`} v={formatCOP(a.recNoche)} />}
+    {a.recDom > 0 && <Fila l="🟡 Recargo dom/fest" v={formatCOP(a.recDom)} />}
+    {(a.extDia + a.extNoche) > 0 && (
+      <Fila color="#F59E0B"
+        l={`⚡ Extras (${fmtHrs(a.extDia)} día · ${fmtHrs(a.extNoche)} noche) · recargo`}
+        v={formatCOP(a.recExt)} />
+    )}
+  </>
+);
+
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function SalaryCalculator() {
   const [tipoContrato,    setTipoContrato]    = useState(TIPOS_CONTRATO[0]);
@@ -257,6 +282,7 @@ export default function SalaryCalculator() {
   const [days,        setDays]        = useState([]);
   const [expandedDay, setExpandedDay] = useState(null);
   const [semanaSel,   setSemanaSel]   = useState(null); // null = todo el período
+  const [inicioSemana, setInicioSemana] = useState(1);  // 1 = lunes
 
   const [modalContrato,  setModalContrato]  = useState(false);
   const [modalMesInicio, setModalMesInicio] = useState(false);
@@ -519,60 +545,69 @@ export default function SalaryCalculator() {
   }, [days, calcDay, calcExtrasVencidas, isPartTime, valorHora, inclPrima,
     horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario, auxCompletoPT, auxTransporteValor]);
 
-  // ── Resumen de horas por semana y por mes ──────────────────────────────────
+  // ── Resumen de horas y recargos por semana (dentro del mes) y por mes ──────
   const resumenHoras = useMemo(() => {
-    const porSemana = {};
-    const porMes = {};
+    const semanas = {};
+    const meses = {};
+    const vacio = () => ({
+      horas: 0, ordDia: 0, ordNoche: 0, extDia: 0, extNoche: 0,
+      recNoche: 0, recDom: 0, recExt: 0,
+    });
+    const sumar = (a, x) => { Object.keys(x).forEach((k) => { a[k] += x[k]; }); };
 
     days.forEach((d) => {
       if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
-      const horas = (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
-      if (horas <= 0) return;
+      const det = calcDay(d).detail;
+      const x = {
+        ordDia: d.dayHours || 0, ordNoche: d.nightHours || 0,
+        extDia: d.extraDayH || 0, extNoche: d.extraNightH || 0,
+        recNoche: det.recNoche || 0,
+        recDom: (det.recDomDia || 0) + (det.recDomNoc || 0),
+        recExt: (det.recExtDia || 0) + (det.recExtNoc || 0),
+      };
+      x.horas = x.ordDia + x.ordNoche + x.extDia + x.extNoche;
+      if (x.horas <= 0) return;
 
-      const wKey = getISOWeekKey(d.year, d.month, d.day);
-      porSemana[wKey] = (porSemana[wKey] || 0) + horas;
+      const w = getSemanaMes(d.year, d.month, d.day, inicioSemana);
+      if (!semanas[w.key]) {
+        semanas[w.key] = { key: w.key, numero: w.numero, mesLabel: MESES[d.month].label, ...vacio() };
+      }
+      sumar(semanas[w.key], x);
 
       const mKey = `${d.year}-${pad(d.month + 1)}`;
-      porMes[mKey] = (porMes[mKey] || 0) + horas;
+      if (!meses[mKey]) {
+        meses[mKey] = { key: mKey, label: `${MESES[d.month].label} ${d.year}`, ...vacio() };
+      }
+      sumar(meses[mKey], x);
     });
 
-    const semanas = Object.entries(porSemana)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, horas]) => ({ key, numero: key.split("-W")[1], horas }));
+    const ordenar = (o) => Object.values(o).sort((a, b) => a.key.localeCompare(b.key));
+    return { semanas: ordenar(semanas), meses: ordenar(meses) };
+  }, [days, calcDay, inicioSemana]);
 
-    const meses = Object.entries(porMes)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, horas]) => {
-        const [y, m] = key.split("-");
-        return { key, label: `${MESES[parseInt(m, 10) - 1]?.label || m} ${y}`, horas };
-      });
-
-    return { semanas, meses };
-  }, [days]);
-
-  // ── Semanas del período (lunes a domingo) ──────────────────────────────────
+  // ── Semanas del período (numeradas dentro de cada mes) ─────────────────────
   const semanasPeriodo = useMemo(() => {
     const map = {};
     days.forEach((d) => {
-      const k = getISOWeekKey(d.year, d.month, d.day);
-      if (!map[k]) map[k] = { key: k, numero: k.split("-W")[1], first: d, last: d };
-      map[k].last = d;
+      const w = getSemanaMes(d.year, d.month, d.day, inicioSemana);
+      if (!map[w.key]) map[w.key] = { key: w.key, numero: w.numero, first: d, last: d };
+      map[w.key].last = d;
     });
     return Object.values(map);
-  }, [days]);
+  }, [days, inicioSemana]);
 
   const resumenSemana = useMemo(() => {
     if (!semanaSel) return null;
     let horas = 0, total = 0, trabajados = 0;
     days.forEach((d) => {
-      if (getISOWeekKey(d.year, d.month, d.day) !== semanaSel) return;
+      if (getSemanaMes(d.year, d.month, d.day, inicioSemana).key !== semanaSel) return;
       if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
       horas += (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
       total += calcDay(d).total;
       trabajados++;
     });
     return { horas, total, trabajados };
-  }, [days, semanaSel, calcDay]);
+  }, [days, semanaSel, calcDay, inicioSemana]);
 
   const labelCorte = `${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`;
 
@@ -613,6 +648,7 @@ export default function SalaryCalculator() {
         daysSnapshot: days,
         salarioBase,
         jornadaContractual,
+        inicioSemana,
       };
       await saveBalance(labelCorte, entry);
       showAlert(
@@ -657,6 +693,7 @@ export default function SalaryCalculator() {
       if (b.pctExtNoche)             setPctExtNoche(b.pctExtNoche);
       if (b.pctDomOrd)                setPctDomOrd(b.pctDomOrd);
       if (b.jornadaContractual)      setJornadaContractual(b.jornadaContractual);
+      if (b.inicioSemana !== undefined) setInicioSemana(b.inicioSemana);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
       const snapshot = (b.daysSnapshot || []).map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
@@ -692,12 +729,15 @@ export default function SalaryCalculator() {
       </tr>`;
     }).join("");
 
-    const semanasPDF = resumenHoras.semanas.map((s) =>
-      `<tr><td>Semana ${s.numero} (${s.key.split("-W")[0]})</td><td style="font-weight:600">${fmtHrs(s.horas)}</td></tr>`
-    ).join("");
-    const mesesPDF = resumenHoras.meses.map((m) =>
-      `<tr><td>${m.label}</td><td style="font-weight:600">${fmtHrs(m.horas)}</td></tr>`
-    ).join("");
+    const filaAgg = (nombre, a) =>
+      `<tr><td>${nombre}</td><td style="font-weight:600">${fmtHrs(a.horas)}</td>
+      <td>${fmtHrs(a.ordNoche)}</td><td>${formatCOP(a.recNoche)}</td>
+      <td>${fmtHrs(a.extDia + a.extNoche)}</td><td>${formatCOP(a.recExt)}</td></tr>`;
+    const thAgg = (t) =>
+      `<thead><tr><th>${t}</th><th>Horas</th><th>H. noct.</th><th>Rec. noct.</th><th>H. extra</th><th>Rec. extra</th></tr></thead>`;
+
+    const semanasPDF = resumenHoras.semanas.map((s) => filaAgg(`${s.mesLabel} · Sem ${s.numero}`, s)).join("");
+    const mesesPDF   = resumenHoras.meses.map((m) => filaAgg(m.label, m)).join("");
 
     const balRows = Object.values(savedBalances).map((b) => `
       <tr><td>${b.corte}</td><td>${b.contrato}</td><td>${b.dias}</td>
@@ -721,24 +761,16 @@ export default function SalaryCalculator() {
       .neto-lbl{font-size:10px;color:rgba(255,255,255,.8);letter-spacing:1px}
       .neto-val{font-size:22px;font-weight:800;color:#fff}
       .tag{display:inline-block;background:#EEF2FF;color:#4F46E5;border-radius:4px;padding:2px 6px;font-size:10px}
-      .twocol{display:flex;gap:16px}
-      .twocol > div{flex:1}
     </style></head><body>
     <h1>💰 Liquidación de Nómina</h1>
     <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · Tarifa hora: ${formatCOP(valorHora)}</h2>
     <span class="tag">Ley 2101: ${HORAS_SEMANA_2026}h/semana · Jornada contrato: ${jornadaContractual}h/semana</span>
 
-    <h3>⏱️ Total de horas trabajadas</h3>
-    <div class="twocol">
-      <div>
-        <table><thead><tr><th>Semana</th><th>Horas</th></tr></thead>
-        <tbody>${semanasPDF || '<tr><td colspan="2">Sin datos</td></tr>'}</tbody></table>
-      </div>
-      <div>
-        <table><thead><tr><th>Mes</th><th>Horas</th></tr></thead>
-        <tbody>${mesesPDF || '<tr><td colspan="2">Sin datos</td></tr>'}</tbody></table>
-      </div>
-    </div>
+    <h3>⏱️ Total de horas y recargos por semana</h3>
+    <table>${thAgg("Semana")}<tbody>${semanasPDF || '<tr><td colspan="6">Sin datos</td></tr>'}</tbody></table>
+
+    <h3>⏱️ Total de horas y recargos por mes</h3>
+    <table>${thAgg("Mes")}<tbody>${mesesPDF || '<tr><td colspan="6">Sin datos</td></tr>'}</tbody></table>
 
     <h3>Detalle de días</h3>
     <table><thead><tr><th>Día</th><th>Tipo</th><th>Hrs ord. día</th><th>Hrs ord. noche</th><th>Subtotal</th></tr></thead>
@@ -1447,40 +1479,40 @@ export default function SalaryCalculator() {
             </View>
           )}
 
-          {/* Resumen de horas semanal / mensual */}
+          {/* Resumen de horas y recargos por semana / mensual */}
           {corteCargado && resumenHoras.semanas.length > 0 && (
             <View style={ss.card}>
               <Text style={ss.sectionTitle}>⏱️ Total de horas</Text>
               <Text style={ss.cutDesc}>
-                {`Según jornada de tu contrato: ${jornadaContractualNum}h/semana`}
+                {`Jornada de tu contrato: ${jornadaContractualNum}h/semana`}
               </Text>
 
               <Text style={ss.groupLabel}>Por semana</Text>
-              <View style={ss.desglose}>
-                {resumenHoras.semanas.map((s) => {
-                  const excede = s.horas > jornadaContractualNum;
-                  return (
-                    <View key={s.key} style={ss.desgloseRow}>
-                      <Text style={[ss.desgloseLabel, excede && ss.desgloseLabelWarn]}>
-                        {`Semana ${s.numero}${excede ? " ⚠️" : ""}`}
+              {resumenHoras.semanas.map((s) => {
+                const excede = s.horas > jornadaContractualNum;
+                return (
+                  <View key={s.key} style={[ss.desglose, { marginBottom: 8 }]}>
+                    <View style={ss.desgloseRow}>
+                      <Text style={[ss.desgloseLabel, { fontWeight: "700" }, excede && ss.desgloseLabelWarn]}>
+                        {`${s.mesLabel} · Semana ${s.numero}${excede ? " ⚠️" : ""}`}
                       </Text>
-                      <Text style={[ss.desgloseValue, excede && ss.desgloseLabelWarn]}>
-                        {fmtHrs(s.horas)}
-                      </Text>
+                      <Text style={[ss.desgloseValue, excede && ss.desgloseLabelWarn]}>{fmtHrs(s.horas)}</Text>
                     </View>
-                  );
-                })}
-              </View>
+                    <FilasAgg a={s} />
+                  </View>
+                );
+              })}
 
-              <Text style={[ss.groupLabel, { marginTop: 10 }]}>Por mes</Text>
-              <View style={ss.desglose}>
-                {resumenHoras.meses.map((m) => (
-                  <View key={m.key} style={ss.desgloseRow}>
-                    <Text style={ss.desgloseLabel}>{m.label}</Text>
+              <Text style={[ss.groupLabel, { marginTop: 10 }]}>Total del mes</Text>
+              {resumenHoras.meses.map((m) => (
+                <View key={m.key} style={[ss.desglose, { marginBottom: 8 }]}>
+                  <View style={ss.desgloseRow}>
+                    <Text style={[ss.desgloseLabel, { fontWeight: "700" }]}>{m.label}</Text>
                     <Text style={ss.desgloseValue}>{fmtHrs(m.horas)}</Text>
                   </View>
-                ))}
-              </View>
+                  <FilasAgg a={m} />
+                </View>
+              ))}
             </View>
           )}
 
@@ -1499,6 +1531,18 @@ export default function SalaryCalculator() {
                 Toca 🛌 descanso · ⛔ no programado (no trabaja y no se paga) · ✕ no trabajado · en domingo/festivo trabajado, 💰/🔄 alterna entre
                 pagarlo en dinero u otorgar día libre · en un día ordinario, 🔄 lo marca como ese día libre
               </Text>
+
+              {/* Día en que empieza la semana */}
+              <Text style={ss.cutLabel}>La semana empieza el:</Text>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                {DIAS_SEMANA.map((x) => (
+                  <TouchableOpacity key={x.v}
+                    style={[ss.weekChip, inicioSemana === x.v && ss.weekChipActive]}
+                    onPress={() => { setInicioSemana(x.v); setSemanaSel(null); }}>
+                    <Text style={[ss.weekChipText, inicioSemana === x.v && ss.weekChipTextActive]}>{x.l}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
 
               {/* Selector de semanas */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
@@ -1532,11 +1576,20 @@ export default function SalaryCalculator() {
                 </View>
               )}
 
-              {days.map((item, index) =>
-                semanaSel && getISOWeekKey(item.year, item.month, item.day) !== semanaSel
-                  ? null
-                  : renderDay(item, index)
-              )}
+              {days.map((item, index) => {
+                const wk = getSemanaMes(item.year, item.month, item.day, inicioSemana);
+                if (semanaSel && wk.key !== semanaSel) return null;
+                const prev = days[index - 1];
+                const nueva = !prev || getSemanaMes(prev.year, prev.month, prev.day, inicioSemana).key !== wk.key;
+                return (
+                  <React.Fragment key={index}>
+                    {nueva && !semanaSel && (
+                      <Text style={ss.weekHeader}>{`${MESES[item.month].label} · Semana ${wk.numero}`}</Text>
+                    )}
+                    {renderDay(item, index)}
+                  </React.Fragment>
+                );
+              })}
             </View>
           )}
 
@@ -1877,6 +1930,7 @@ const ss = StyleSheet.create({
   weekChipText:  { fontSize:13, fontWeight:"700", color:"#374151" },
   weekChipSub:   { fontSize:10, color:"#6B7280", marginTop:1 },
   weekChipTextActive: { color:"#fff" },
+  weekHeader:    { fontSize:12, fontWeight:"700", color:"#4F46E5", marginTop:10, marginBottom:6 },
   expandedContent: { padding:10, borderTopWidth:1, borderTopColor:"#F3F4F6", backgroundColor:"#fff" },
   groupLabel:    { fontSize:12, fontWeight:"600", color:"#6B7280", marginBottom:6 },
   desglose:      { backgroundColor:"#F8F9FF", borderRadius:8, padding:10, marginTop:10 },
