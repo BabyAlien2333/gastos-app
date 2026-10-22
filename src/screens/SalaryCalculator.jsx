@@ -964,7 +964,10 @@ export default function SalaryCalculator() {
     const acum = Object.values(savedBalances).reduce((s, b) => s + b.totalNeto, 0);
 
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+    <title>Nomina ${labelCorte.replace(/[^0-9a-zA-Z]+/g, "-")}</title>
     <style>
+      @page{size:A4 landscape;margin:10mm}
+      *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
       body{font-family:Arial,sans-serif;padding:20px;color:#1a1a1a;font-size:11px}
       h1{color:#4F46E5;font-size:18px;margin-bottom:4px}h2{color:#6B7280;font-size:12px;font-weight:normal;margin-top:0}
       h3{color:#1E1B4B;font-size:13px;margin:18px 0 6px;background:#EEF2FF;padding:6px 8px;border-radius:6px}
@@ -1046,22 +1049,33 @@ export default function SalaryCalculator() {
     try {
       // ── Navegador (web): abre el diálogo de impresión → "Guardar como PDF" ──
       if (Platform.OS === "web") {
+        // 1) Ventana nueva solo con el informe (imprime únicamente el informe)
+        const w = window.open("", "_blank");
+        if (w) {
+          w.document.open();
+          w.document.write(html);
+          w.document.close();
+          w.focus();
+          setTimeout(() => { w.print(); }, 600);
+          return;
+        }
+        // 2) Si el navegador bloquea la ventana: iframe con tamaño real fuera de pantalla
         const iframe = document.createElement("iframe");
         iframe.style.position = "fixed";
-        iframe.style.right = "0";
-        iframe.style.bottom = "0";
-        iframe.style.width = "0";
-        iframe.style.height = "0";
+        iframe.style.left = "-10000px";
+        iframe.style.top = "0";
+        iframe.style.width = "1100px";
+        iframe.style.height = "1500px";
         iframe.style.border = "0";
         document.body.appendChild(iframe);
-        const limpiar = () => setTimeout(() => {
-          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
-        }, 2000);
         iframe.onload = () => {
-          try {
+          setTimeout(() => {
             iframe.contentWindow.focus();
             iframe.contentWindow.print();
-          } finally { limpiar(); }
+            setTimeout(() => {
+              if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+            }, 3000);
+          }, 400);
         };
         iframe.srcdoc = html;
         return;
