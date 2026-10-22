@@ -1044,10 +1044,35 @@ export default function SalaryCalculator() {
     </p></body></html>`;
 
     try {
-      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      // ── Navegador (web): abre el diálogo de impresión → "Guardar como PDF" ──
+      if (Platform.OS === "web") {
+        const iframe = document.createElement("iframe");
+        iframe.style.position = "fixed";
+        iframe.style.right = "0";
+        iframe.style.bottom = "0";
+        iframe.style.width = "0";
+        iframe.style.height = "0";
+        iframe.style.border = "0";
+        document.body.appendChild(iframe);
+        const limpiar = () => setTimeout(() => {
+          if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        }, 2000);
+        iframe.onload = () => {
+          try {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+          } finally { limpiar(); }
+        };
+        iframe.srcdoc = html;
+        return;
+      }
+
+      // ── App móvil (iOS / Android) ──
+      const res = await Print.printToFileAsync({ html, base64: false });
+      if (!res || !res.uri) throw new Error("No se pudo generar el PDF.");
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Exportar nómina", UTI: "com.adobe.pdf" });
-      } else showAlert("PDF", uri);
+        await Sharing.shareAsync(res.uri, { mimeType: "application/pdf", dialogTitle: "Exportar nómina", UTI: "com.adobe.pdf" });
+      } else showAlert("PDF", res.uri);
     } catch (e) { showAlert("Error", e.message); }
   };
 
