@@ -116,6 +116,51 @@ const fmtHrs = (v) => {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 };
 
+// ─── Horario de entrada / salida (formato 24 h) ──────────────────────────────
+const NOC_INI = 19 * 60; // 19:00 (Ley 2466/2025)
+const NOC_FIN = 6 * 60;  // 06:00
+
+// "08:00" → 480 · devuelve null si no es una hora válida
+const aMin = (s) => {
+  const m = /^(\d{2}):(\d{2})$/.exec(s || "");
+  if (!m) return null;
+  const h = +m[1], mi = +m[2];
+  return h > 23 || mi > 59 ? null : h * 60 + mi;
+};
+
+// "0800" → "08:00" (agrega los dos puntos mientras se escribe)
+const formatHora = (txt) => {
+  const d = (txt || "").replace(/\D/g, "").slice(0, 4);
+  return d.length > 2 ? `${d.slice(0, 2)}:${d.slice(2)}` : d;
+};
+
+// Calcula las horas ordinarias diurnas/nocturnas entre entrada y salida,
+// descontando el descanso. NO calcula extras (esas son manuales) y NO aplica
+// ningún tope diario ni semanal. Devuelve null si el horario no es válido.
+const calcularJornada = (entrada, salida, descansoMin = 0) => {
+  const ini = aMin(entrada);
+  let fin = aMin(salida);
+  if (ini === null || fin === null || ini === fin) return null;
+  if (fin < ini) fin += 24 * 60; // el turno cruza la medianoche
+
+  let dia = 0, noche = 0;
+  for (let t = ini; t < fin; t++) {
+    const m = t % (24 * 60);
+    (m >= NOC_INI || m < NOC_FIN) ? noche++ : dia++;
+  }
+
+  // El descanso se descuenta primero del tramo diurno
+  let desc = Math.max(0, descansoMin);
+  const qd = Math.min(desc, dia); dia -= qd; desc -= qd;
+  noche = Math.max(0, noche - desc);
+
+  return {
+    dayHours: dia / 60,
+    nightHours: noche / 60,
+    total: (dia + noche) / 60,
+  };
+};
+
 // Etiquetas para las semanas (ej: "12–18 oct")
 const MES_CORTO = (m) => MESES[m].label.slice(0, 3).toLowerCase();
 const labelSemana = (a, b) =>
@@ -167,6 +212,7 @@ const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => 
       especial: festivo || domingo,
       dayHours: 0, nightHours: 0,
       extraDayH: 0, extraNightH: 0,
+      entrada: "", salida: "", descansoMin: 30, // horario 24 h
     });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -220,6 +266,19 @@ const Stepper = ({ label, value, onChange, small }) => (
   </View>
 );
 
+// ─── Campo de hora 24 h (HH:MM) ──────────────────────────────────────────────
+const HoraInput = ({ label, value, onChange }) => (
+  <View style={ss.stepperWrap}>
+    <Text style={ss.stepperLabel}>{label}</Text>
+    <TextInput
+      style={[ss.cutInput, { textAlign: "center" }]}
+      keyboardType="numeric" returnKeyType="done" blurOnSubmit
+      placeholder="HH:MM" placeholderTextColor="#aaa" maxLength={5}
+      value={value || ""} onChangeText={(t) => onChange(formatHora(t))}
+    />
+  </View>
+);
+
 // ─── Filas de resumen (semana / mes) ─────────────────────────────────────────
 const Fila = ({ l, v, color }) => (
   <View style={ss.desgloseRow}>
@@ -266,8 +325,6 @@ export default function SalaryCalculator() {
   const [domPct,         setDomPct]         = useState("80");
   const [diasXDescanso,  setDiasXDescanso]  = useState("6");
   const [inclPrima,      setInclPrima]      = useState(false);
-
-  const [jornadaContractual, setJornadaContractual] = useState(String(HORAS_SEMANA_2026));
 
   const [diaInicio,  setDiaInicio]  = useState("1");
   const [mesInicio,  setMesInicio]  = useState(0);
@@ -407,8 +464,6 @@ export default function SalaryCalculator() {
   const pctDomOrdNum = isPartTime
     ? domPctNum
     : Math.max(0, parseFloat(pctDomOrd) || 75) / 100;
-
-  const jornadaContractualNum = Math.max(1, parseFloat(jornadaContractual) || HORAS_SEMANA_2026);
 
   const calcDay = useCallback((d) => {
     if (!d.worked || d.descanso || d.noProgramado) return { total: 0, detail: {} };
@@ -647,7 +702,6 @@ export default function SalaryCalculator() {
         fecha: new Date().toLocaleDateString("es-CO"),
         daysSnapshot: days,
         salarioBase,
-        jornadaContractual,
         inicioSemana,
       };
       await saveBalance(labelCorte, entry);
@@ -692,12 +746,12 @@ export default function SalaryCalculator() {
       if (b.pctExtDia)               setPctExtDia(b.pctExtDia);
       if (b.pctExtNoche)             setPctExtNoche(b.pctExtNoche);
       if (b.pctDomOrd)                setPctDomOrd(b.pctDomOrd);
-      if (b.jornadaContractual)      setJornadaContractual(b.jornadaContractual);
       if (b.inicioSemana !== undefined) setInicioSemana(b.inicioSemana);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
       const snapshot = (b.daysSnapshot || []).map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
         noProgramado: false,
+        entrada: "", salida: "", descansoMin: 30,
         ...d,
       }));
       setDays(snapshot);
@@ -721,8 +775,10 @@ export default function SalaryCalculator() {
         : d.compensatorio ? "#ede9fe" : d.descanso ? "#dbeafe" : !d.worked ? "#f3f4f6"
         : d.festivo ? "#fde68a" : d.domingo ? "#fef9c3" : "#fff";
       const mostrarHoras = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+      const horario = (mostrarHoras && d.entrada && d.salida) ? `${d.entrada} – ${d.salida}` : "-";
       return `<tr style="background:${bg}">
         <td>${d.label}</td><td>${tipo}</td>
+        <td>${horario}</td>
         <td>${mostrarHoras ? fmtHrs(d.dayHours)   : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(d.nightHours) : "-"}</td>
         <td style="font-weight:600">${(d.worked && !d.descanso && !d.noProgramado) ? formatCOP(c.total) : "-"}</td>
@@ -764,7 +820,7 @@ export default function SalaryCalculator() {
     </style></head><body>
     <h1>💰 Liquidación de Nómina</h1>
     <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · Tarifa hora: ${formatCOP(valorHora)}</h2>
-    <span class="tag">Ley 2101: ${HORAS_SEMANA_2026}h/semana · Jornada contrato: ${jornadaContractual}h/semana</span>
+    <span class="tag">Ley 2101: ${HORAS_SEMANA_2026}h/semana</span>
 
     <h3>⏱️ Total de horas y recargos por semana</h3>
     <table>${thAgg("Semana")}<tbody>${semanasPDF || '<tr><td colspan="6">Sin datos</td></tr>'}</tbody></table>
@@ -773,7 +829,7 @@ export default function SalaryCalculator() {
     <table>${thAgg("Mes")}<tbody>${mesesPDF || '<tr><td colspan="6">Sin datos</td></tr>'}</tbody></table>
 
     <h3>Detalle de días</h3>
-    <table><thead><tr><th>Día</th><th>Tipo</th><th>Hrs ord. día</th><th>Hrs ord. noche</th><th>Subtotal</th></tr></thead>
+    <table><thead><tr><th>Día</th><th>Tipo</th><th>Horario</th><th>Hrs ord. día</th><th>Hrs ord. noche</th><th>Subtotal</th></tr></thead>
     <tbody>${filas}</tbody></table>
     <div class="box">
       <div class="row"><span class="lbl">Días trabajados</span><span class="val">${diasTrabajados.length}</span></div>
@@ -924,6 +980,15 @@ export default function SalaryCalculator() {
 
   const updateHours = useCallback((i, field, val) => setDays((p) => p.map((d, idx) => idx === i ? { ...d, [field]: val } : d)), []);
 
+  // Cambia entrada / salida / descanso y recalcula SOLO las horas ordinarias
+  // (diurnas y nocturnas). Las horas extras no se tocan: siguen siendo manuales.
+  const updateJornada = useCallback((i, patch) => setDays((prev) => prev.map((d, idx) => {
+    if (idx !== i) return d;
+    const n = { ...d, ...patch };
+    const r = calcularJornada(n.entrada, n.salida, n.descansoMin ?? 30);
+    return r ? { ...n, dayHours: r.dayHours, nightHours: r.nightHours } : n;
+  })), []);
+
   // ── Render día ────────────────────────────────────────────────────────────
   const renderDay = (item, index) => {
     const isExp = expandedDay === index;
@@ -985,7 +1050,10 @@ export default function SalaryCalculator() {
     }
 
     const horasCompactas =
+      `${item.entrada && item.salida ? '🕐' + item.entrada + '–' + item.salida + ' · ' : ''}` +
       `${item.dayHours > 0 ? '☀️' + fmtHrs(item.dayHours) + ' ' : ''}${item.nightHours > 0 ? '🌙' + fmtHrs(item.nightHours) : ''}`;
+
+    const jornada = calcularJornada(item.entrada, item.salida, item.descansoMin ?? 30);
 
     return (
       <View key={index} style={[ss.dayRow, isEsp && ss.dayRowEsp]}>
@@ -1035,7 +1103,32 @@ export default function SalaryCalculator() {
 
         {isExp && (
           <View style={ss.expandedContent}>
-            <Text style={ss.groupLabel}>Horas ordinarias</Text>
+            {/* Horario de entrada / salida (24 h) */}
+            <Text style={ss.groupLabel}>🕐 Horario (formato 24 h)</Text>
+            <View style={ss.stepperGrid}>
+              <HoraInput label="Entrada" value={item.entrada}
+                onChange={(v) => updateJornada(index, { entrada: v })} />
+              <HoraInput label="Salida" value={item.salida}
+                onChange={(v) => updateJornada(index, { salida: v })} />
+            </View>
+
+            <Text style={[ss.stepperLabel, { marginTop: 8 }]}>Descanso (no se paga)</Text>
+            <View style={{ flexDirection: "row", gap: 6, marginBottom: 6 }}>
+              {[0, 30, 45, 60].map((m) => (
+                <TouchableOpacity key={m}
+                  style={[ss.weekChip, (item.descansoMin ?? 30) === m && ss.weekChipActive]}
+                  onPress={() => updateJornada(index, { descansoMin: m })}>
+                  <Text style={[ss.weekChipText, (item.descansoMin ?? 30) === m && ss.weekChipTextActive]}>
+                    {m === 0 ? "Sin" : `${m} min`}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {jornada && (
+              <Text style={ss.cutDesc}>{`Total trabajado: ${fmtHrs(jornada.total)} (☀️ ${fmtHrs(jornada.dayHours)} · 🌙 ${fmtHrs(jornada.nightHours)})`}</Text>
+            )}
+
+            <Text style={[ss.groupLabel, { marginTop: 6 }]}>Horas ordinarias</Text>
             <View style={ss.stepperGrid}>
               <Stepper label={`☀️ Diurnas${isEsp ? " (+75%)" : ""}`}
                 value={item.dayHours} onChange={(v) => updateHours(index, "dayHours", v)} />
@@ -1043,7 +1136,7 @@ export default function SalaryCalculator() {
                 value={item.nightHours} onChange={(v) => updateHours(index, "nightHours", v)} />
             </View>
             <Text style={[ss.groupLabel, { marginTop: 10, color: "#F59E0B" }]}>
-              ⚡ Horas extras (se pagan el siguiente corte)
+              ⚡ Horas extras (manuales · se pagan el siguiente corte)
             </Text>
             <View style={ss.stepperGrid}>
               <Stepper label={`⚡☀️ Extra diurna${isEsp ? " (+100%)" : " (+25%)"}`}
@@ -1124,23 +1217,6 @@ export default function SalaryCalculator() {
                 <Text style={ss.alertText}>⚠️ Sin auxilio de transporte ni deducciones de empleado. El contratista paga salud y pensión como independiente.</Text>
               </View>
             )}
-          </View>
-
-          {/* Jornada contractual */}
-          <View style={ss.card}>
-            <Text style={ss.sectionTitle}>⏱️ Jornada semanal del contrato</Text>
-            <Text style={ss.cutDesc}>
-              {`Depende de tu contrato — ajústala para que la alerta de horas semanales sea correcta. No afecta la liquidación (que sigue la Ley 2101: ${HORAS_SEMANA_2026}h/sem).`}
-            </Text>
-            <View style={ss.domRow}>
-              <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
-                returnKeyType="done" blurOnSubmit
-                value={jornadaContractual} onChangeText={setJornadaContractual} />
-              <View style={ss.domInfo}>
-                <Text style={ss.domInfoText}>{`${jornadaContractualNum}h / semana`}</Text>
-                <Text style={ss.domInfoSub}>según tu contrato</Text>
-              </View>
-            </View>
           </View>
 
           {/* Salario / Valor hora */}
@@ -1479,29 +1555,23 @@ export default function SalaryCalculator() {
             </View>
           )}
 
-          {/* Resumen de horas y recargos por semana / mensual */}
+          {/* Resumen de horas y recargos por semana / mensual (sin tope semanal) */}
           {corteCargado && resumenHoras.semanas.length > 0 && (
             <View style={ss.card}>
               <Text style={ss.sectionTitle}>⏱️ Total de horas</Text>
-              <Text style={ss.cutDesc}>
-                {`Jornada de tu contrato: ${jornadaContractualNum}h/semana`}
-              </Text>
 
               <Text style={ss.groupLabel}>Por semana</Text>
-              {resumenHoras.semanas.map((s) => {
-                const excede = s.horas > jornadaContractualNum;
-                return (
-                  <View key={s.key} style={[ss.desglose, { marginBottom: 8 }]}>
-                    <View style={ss.desgloseRow}>
-                      <Text style={[ss.desgloseLabel, { fontWeight: "700" }, excede && ss.desgloseLabelWarn]}>
-                        {`${s.mesLabel} · Semana ${s.numero}${excede ? " ⚠️" : ""}`}
-                      </Text>
-                      <Text style={[ss.desgloseValue, excede && ss.desgloseLabelWarn]}>{fmtHrs(s.horas)}</Text>
-                    </View>
-                    <FilasAgg a={s} />
+              {resumenHoras.semanas.map((s) => (
+                <View key={s.key} style={[ss.desglose, { marginBottom: 8 }]}>
+                  <View style={ss.desgloseRow}>
+                    <Text style={[ss.desgloseLabel, { fontWeight: "700" }]}>
+                      {`${s.mesLabel} · Semana ${s.numero}`}
+                    </Text>
+                    <Text style={ss.desgloseValue}>{fmtHrs(s.horas)}</Text>
                   </View>
-                );
-              })}
+                  <FilasAgg a={s} />
+                </View>
+              ))}
 
               <Text style={[ss.groupLabel, { marginTop: 10 }]}>Total del mes</Text>
               {resumenHoras.meses.map((m) => (
@@ -1938,7 +2008,6 @@ const ss = StyleSheet.create({
   desgloseRow:   { flexDirection:"row", justifyContent:"space-between", marginBottom:4 },
   desgloseLabel: { fontSize:12, color:"#374151" },
   desgloseValue: { fontSize:12, fontWeight:"600", color:"#4F46E5" },
-  desgloseLabelWarn: { color:"#DC2626", fontWeight:"700" },
   totalsCard:    { backgroundColor:"#1E1B4B", borderRadius:16, padding:20, marginBottom:14 },
   totalsTitle:   { color:"#C7D2FE", fontSize:15, fontWeight:"600", marginBottom:2 },
   totalsSubtitle:{ color:"#818CF8", fontSize:11, marginBottom:14 },
