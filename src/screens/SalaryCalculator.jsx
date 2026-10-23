@@ -337,7 +337,9 @@ export default function SalaryCalculator() {
   const [inclAuxTransp,   setInclAuxTransp]   = useState(true);
   const [inclDeducciones, setInclDeducciones] = useState(true);
   const [auxTransporteInput, setAuxTransporteInput] = useState(String(AUX_TRANSPORTE_DEFAULT));
-  const auxTransporteValor = parseFloat(auxTransporteInput.replace(/\./g, "").replace(",", ".")) || AUX_TRANSPORTE_DEFAULT;
+  // Cualquier valor, sin condiciones (incluso 0). Si el campo queda vacío = 0.
+  const auxParsed = parseFloat(auxTransporteInput.replace(/\./g, "").replace(",", "."));
+  const auxTransporteValor = Number.isFinite(auxParsed) ? Math.max(0, auxParsed) : 0;
 
   // ── D1 Part Time: modo de ingreso del pago base ──────────────────────────
   const [modoSueldoPT,   setModoSueldoPT]   = useState(false);
@@ -590,7 +592,7 @@ export default function SalaryCalculator() {
       ? (auxCompletoPT
           ? auxBase
           : Math.round(auxBase * (horasPT / HORAS_MES_COMPLETO)))
-      : (salario <= 2 * SMMLV_2026 ? auxBase : 0);
+      : auxBase;
 
     const devBase  = subOrd + subComp + descRem + prima + aux;
     const baseDeduc = isPartTime ? devBase : salario;
@@ -957,12 +959,6 @@ export default function SalaryCalculator() {
     });
     if (mesesOrden.length > 1) filasResumen += filaAgg("TOTAL DEL PERÍODO", totalPeriodo, "tot");
 
-    const balRows = Object.values(savedBalances).map((b) => `
-      <tr><td>${b.corte}</td><td>${b.contrato}</td><td>${b.dias}</td>
-      <td>${formatCOP(b.totalBruto)}</td><td>${formatCOP(b.totalNeto)}</td></tr>`).join("");
-
-    const acum = Object.values(savedBalances).reduce((s, b) => s + b.totalNeto, 0);
-
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
     <title>Nomina ${labelCorte.replace(/[^0-9a-zA-Z]+/g, "-")}</title>
     <style>
@@ -1037,11 +1033,6 @@ export default function SalaryCalculator() {
       <div class="row"><span class="lbl">(-) Pensión 4%</span><span class="val">-${formatCOP(deducPension)}</span></div>` : ""}
     </div>
     <div class="neto"><div class="neto-lbl">NETO A PAGAR</div><div class="neto-val">${formatCOP(totalNeto)}</div></div>
-    ${Object.keys(savedBalances).length > 0 ? `
-    <h3>Balance acumulado 2026</h3>
-    <table><thead><tr><th>Período</th><th>Contrato</th><th>Días</th><th>Bruto</th><th>Neto</th></tr></thead>
-    <tbody>${balRows}</tbody></table>
-    <div class="neto"><div class="neto-lbl">ACUMULADO NETO 2026</div><div class="neto-val">${formatCOP(acum)}</div></div>` : ""}
     <p style="font-size:9px;color:#9CA3AF;margin-top:16px">
       Recargos CST Colombia · Ley 2101/2021 · Compensatorios CST art. 179-180 · Extras pagadas mes vencido
     </p></body></html>`;
@@ -1625,7 +1616,7 @@ export default function SalaryCalculator() {
                       ? (auxCompletoPT
                           ? `${formatCOP(auxTransporteValor)}/mes completo · full time`
                           : `Proporcional a horas · base ${formatCOP(auxTransporteValor)}`)
-                      : `${formatCOP(auxTransporteValor)}/mes · solo si salario ≤ 2 SMMLV`}
+                      : `${formatCOP(auxTransporteValor)}/mes`}
                   </Text>
                 </View>
                 <Switch value={inclAuxTransp} onValueChange={setInclAuxTransp} trackColor={{ true: "#4F46E5" }} />
