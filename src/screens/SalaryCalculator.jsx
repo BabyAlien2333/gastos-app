@@ -189,6 +189,134 @@ const calcularJornada = (turnos) => {
   return { dayHours, nightHours, total: dayHours + nightHours, detalle, solapa };
 };
 
+// ─── Recargo dominical/festivo según la fecha (Ley 2466/2025) ────────────────
+// 75% hasta 30-jun-2025 · 80% desde 1-jul-2025 · 90% desde 1-jul-2026 · 100% desde 1-jul-2027
+const pctDomLegal = (y, m, d) => {
+  const f = y * 10000 + (m + 1) * 100 + d;
+  if (f >= 20270701) return 100;
+  if (f >= 20260701) return 90;
+  if (f >= 20250701) return 80;
+  return 75;
+};
+
+// Aportes (salud / pensión): se aproximan al múltiplo de 100 superior (como en PILA).
+// Si prefieres redondear al más cercano, cambia Math.ceil por Math.round.
+const redondear100 = (v) => Math.ceil(Math.round(v) / 100) * 100;
+
+// "1.500.000" → 1500000 · vacío → 0
+const parseValor = (s) => parseFloat(String(s || "").replace(/\./g, "").replace(",", ".")) || 0;
+
+// Clave de la semana real (7 días) a la que pertenece un día, según el día en que empieza la semana
+const semanaRealKey = (d, inicioSemana) => {
+  const dif = (new Date(d.year, d.month, d.day).getDay() - inicioSemana + 7) % 7;
+  const ini = new Date(d.year, d.month, d.day - dif);
+  return `${ini.getFullYear()}-${pad(ini.getMonth() + 1)}-${pad(ini.getDate())}`;
+};
+
+// Minutos trabajados de un turno, en orden, marcados "D" (diurno) o "N" (nocturno), ya sin el descanso
+const minutosTurno = (t) => {
+  const ini = aMin(t.entrada);
+  let fin = aMin(t.salida);
+  if (ini === null || fin === null || ini === fin) return null;
+  if (fin < ini) fin += 24 * 60;
+  const arr = [];
+  for (let x = ini; x < fin; x++) {
+    const m = x % (24 * 60);
+    arr.push(m >= NOC_INI || m < NOC_FIN ? "N" : "D");
+  }
+  // El descanso se descuenta primero del tramo diurno (igual que calcularTurno)
+  let desc = Math.max(0, t.descansoMin || 0);
+  const sinDesc = [];
+  for (const c of arr) {
+    if (c === "D" && desc > 0) { desc--; continue; }
+    sinDesc.push(c);
+  }
+  const res = [];
+  for (const c of sinDesc) {
+    if (c === "N" && desc > 0) { desc--; continue; }
+    res.push(c);
+  }
+  return { ini, min: res };
+};
+
+// Reparte las horas extras del día entre diurnas y nocturnas tomando las ÚLTIMAS horas trabajadas.
+// Si el día no tiene horario válido (horas ingresadas a mano), reparte en proporción.
+const repartirExtrasDia = (d, excesoH) => {
+  const wD = d.dayHours || 0, wN = d.nightHours || 0;
+  const total = wD + wN;
+  const turnos = getTurnos(d).map(minutosTurno).filter(Boolean).sort((a, b) => a.ini - b.ini);
+  const todos = [].concat(...turnos.map((x) => x.min));
+  if (todos.length > 0 && Math.abs(todos.length / 60 - total) < 0.02) {
+    const n = Math.min(todos.length, Math.round(excesoH * 60));
+    const ultimas = todos.slice(todos.length - n);
+    const exN = ultimas.filter((c) => c === "N").length / 60;
+    return { exD: n / 60 - exN, exN };
+  }
+  const exN = total > 0 ? excesoH * (wN / total) : 0;
+  return { exD: excesoH - exN, exN };
+};
+
+// Límite de horas ordinarias de cada semana real (7 días):
+//  · semana con algún día libre (descanso, compensatorio o sin trabajar) → `limiteNormal` (42 h)
+//  · semana COMPLETA sin ningún día libre → `limiteSinDescanso` (50 h): es la que compensa
+//    la otra semana de 2 días libres, por eso esas 50 h no son extras
+const limitesPorSemana = (days, inicioSemana, limiteNormal, limiteSinDescanso) => {
+  const info = {};
+  days.forEach((d) => {
+    const k = semanaRealKey(d, inicioSemana);
+    if (!info[k]) info[k] = { key: k, dias: 0, libres: 0, primero: d, ultimo: d };
+    const trabajado = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+    info[k].dias += 1;
+    if (!trabajado) info[k].libres += 1;
+    info[k].ultimo = d;
+  });
+  Object.values(info).forEach((w) => {
+    w.completa = w.dias === 7; // si el corte parte la semana no se puede saber si hubo día libre
+    w.sinDescanso = w.completa && w.libres === 0 && limiteSinDescanso > 0;
+    w.limite = w.sinDescanso ? limiteSinDescanso : limiteNormal;
+  });
+  return info;
+};
+
+// Horas extras por regla semanal: lo que pase del límite de horas ordinarias de la semana
+// se paga como extra. Devuelve los días con las horas ya repartidas:
+//   dayHours / nightHours = ordinarias · extraDayH / extraNightH = extras (automáticas + manuales)
+//   workedDayH / workedNightH = horas trabajadas ingresadas (antes de repartir)
+const aplicarExtrasSemanales = (days, inicioSemana, limiteNormal, limiteSinDescanso, activo) => {
+  const out = days.map((d) => ({
+    ...d,
+    workedDayH: d.dayHours || 0, workedNightH: d.nightHours || 0,
+    manualExtraDayH: d.extraDayH || 0, manualExtraNightH: d.extraNightH || 0,
+    autoExtraDayH: 0, autoExtraNightH: 0,
+  }));
+  if (!activo || !(limiteNormal > 0)) return out;
+
+  const limites = limitesPorSemana(days, inicioSemana, limiteNormal, limiteSinDescanso);
+  const acum = {};
+  out.forEach((d) => {
+    const trabajado = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+    const total = d.workedDayH + d.workedNightH;
+    if (!trabajado || total <= 0) return;
+    const key = semanaRealKey(d, inicioSemana);
+    const limiteH = limites[key].limite;
+    const previas = acum[key] || 0;
+    acum[key] = previas + total;
+    const exceso = total - Math.max(0, limiteH - previas);
+    if (exceso <= 1e-6) return;
+    const { exD, exN } = repartirExtrasDia(
+      { ...d, dayHours: d.workedDayH, nightHours: d.workedNightH },
+      Math.min(exceso, total)
+    );
+    d.autoExtraDayH = exD;
+    d.autoExtraNightH = exN;
+    d.dayHours = Math.max(0, d.workedDayH - exD);
+    d.nightHours = Math.max(0, d.workedNightH - exN);
+    d.extraDayH = d.manualExtraDayH + exD;
+    d.extraNightH = d.manualExtraNightH + exN;
+  });
+  return out;
+};
+
 // Etiquetas para las semanas (ej: "12–18 oct")
 const MES_CORTO = (m) => MESES[m].label.slice(0, 3).toLowerCase();
 const labelSemana = (a, b) =>
@@ -350,11 +478,23 @@ export default function SalaryCalculator() {
   const [pctNocturno,  setPctNocturno]  = useState("35");
   const [pctExtDia,    setPctExtDia]    = useState("25");
   const [pctExtNoche,  setPctExtNoche]  = useState("75");
-  const [pctDomOrd,    setPctDomOrd]    = useState("75");
+  const [pctDomOrd,    setPctDomOrd]    = useState(""); // vacío = % legal según la fecha
 
-  const [domPct,         setDomPct]         = useState("80");
+  const [domPct,         setDomPct]         = useState(""); // vacío = % legal según la fecha
   const [diasXDescanso,  setDiasXDescanso]  = useState("6");
   const [inclPrima,      setInclPrima]      = useState(false);
+
+  // Regla de horas extras por semana
+  const [extrasAuto,     setExtrasAuto]     = useState(true);
+  const [limiteSemanal,  setLimiteSemanal]  = useState(String(HORAS_SEMANA_2026));
+  const limiteSemanalNum = Math.max(0, parseFloat(String(limiteSemanal).replace(",", ".")) || 0);
+  // Semana sin ningún día libre (la otra semana tiene 2): sus horas ordinarias llegan hasta este límite
+  const [limiteSinDescanso, setLimiteSinDescanso] = useState("50");
+  const limiteSinDescansoNum = Math.max(0, parseFloat(String(limiteSinDescanso).replace(",", ".")) || 0);
+
+  // Descuentos adicionales (caja de compensación, libranza, etc.)
+  const [descAdic, setDescAdic] = useState([{ nombre: "Caja de compensación", valor: "" }]);
+  const descAdicTotal = descAdic.reduce((s, x) => s + parseValor(x.valor), 0);
 
   const [diaInicio,  setDiaInicio]  = useState("1");
   const [mesInicio,  setMesInicio]  = useState(0);
@@ -488,23 +628,67 @@ export default function SalaryCalculator() {
     ? (modoSueldoPT ? valorHoraPTCalc : valorHoraIngresado)
     : (modoHora ? valorHoraIngresado : valorHoraCalc);
 
-  const domPctNum    = Math.max(0, parseFloat(domPct)      || 80) / 100;
   const pctNocNum    = Math.max(0, parseFloat(pctNocturno) || 35) / 100;
   const pctExtDiaNum = Math.max(0, parseFloat(pctExtDia)   || 25) / 100;
   const pctExtNocNum = Math.max(0, parseFloat(pctExtNoche) || 75) / 100;
-  const pctDomOrdNum = isPartTime
-    ? domPctNum
-    : Math.max(0, parseFloat(pctDomOrd) || 75) / 100;
+
+  // Dominical/festivo: si el campo está vacío se usa el % legal según la fecha de cada día
+  // (80% hasta el 30-jun-2026 · 90% desde el 1-jul-2026 · 100% desde el 1-jul-2027)
+  const domOverrideRaw = parseFloat(String(isPartTime ? domPct : pctDomOrd).replace(",", "."));
+  const domOverride = Number.isFinite(domOverrideRaw) && domOverrideRaw > 0 ? domOverrideRaw : null;
+  const pctDomDe = useCallback(
+    (d) => (domOverride !== null ? domOverride : pctDomLegal(d.year, d.month, d.day)) / 100,
+    [domOverride]
+  );
+  const ultimoDia = days.length ? days[days.length - 1] : { year: 2026, month: 9, day: 1 };
+  const pctDomRef = pctDomDe(ultimoDia);
+
+  // Sueldo fijo mensual (incluye el descanso remunerado) o pago por horas
+  const usaSueldoFijo = isPartTime ? (modoSueldoPT && salarioBasePTNum > 0) : (!modoHora && salario > 0);
+  const sueldoMensual = isPartTime ? salarioBasePTNum : salario;
+
+  // Horas ya repartidas: ordinarias + extras (automáticas por semana + manuales)
+  const daysEff = useMemo(
+    () => aplicarExtrasSemanales(days, inicioSemana, limiteSemanalNum, limiteSinDescansoNum, extrasAuto),
+    [days, inicioSemana, limiteSemanalNum, limiteSinDescansoNum, extrasAuto]
+  );
+
+  // Límite de cada semana real (42 h, o 50 h si esa semana no tuvo ningún día libre)
+  const limitesSemUI = useMemo(
+    () => limitesPorSemana(days, inicioSemana, limiteSemanalNum, limiteSinDescansoNum),
+    [days, inicioSemana, limiteSemanalNum, limiteSinDescansoNum]
+  );
+  const limiteDe = (d) => (limitesSemUI[semanaRealKey(d, inicioSemana)] || {}).limite || limiteSemanalNum;
+
+  // Resumen por semana real: horas, límite aplicado y extras generadas
+  const semanasExtras = useMemo(() => {
+    const filas = {};
+    Object.values(limitesSemUI).forEach((w) => { filas[w.key] = { ...w, horas: 0, extras: 0 }; });
+    daysEff.forEach((d) => {
+      const f = filas[semanaRealKey(d, inicioSemana)];
+      const trabajado = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+      if (!f || !trabajado) return;
+      f.horas += (d.workedDayH || 0) + (d.workedNightH || 0) + (d.manualExtraDayH || 0) + (d.manualExtraNightH || 0);
+      f.extras += (d.autoExtraDayH || 0) + (d.autoExtraNightH || 0);
+    });
+    return Object.values(filas).filter((f) => f.horas > 0).sort((a, b) => a.key.localeCompare(b.key));
+  }, [limitesSemUI, daysEff, inicioSemana]);
 
   const calcDay = useCallback((d) => {
-    if (!d.worked || d.descanso || d.noProgramado) return { total: 0, detail: {} };
+    if (!d.worked || d.descanso || d.noProgramado) return { total: 0, adicional: 0, valor: 0, detail: {} };
 
     if (d.compensatorio) {
       const valorDiaComp = horasDiarias * valorHora;
-      return { total: valorDiaComp, detail: { compensatorioDia: valorDiaComp } };
+      // Con sueldo fijo el día libre ya está incluido en el sueldo
+      return {
+        total: valorDiaComp, adicional: 0,
+        valor: usaSueldoFijo ? 0 : valorDiaComp,
+        detail: { compensatorioDia: valorDiaComp },
+      };
     }
 
     const e = d.especial;
+    const pDom = pctDomDe(d);
 
     const baseDia    = d.dayHours           * valorHora;
     const baseNoche  = d.nightHours         * valorHora;
@@ -513,23 +697,31 @@ export default function SalaryCalculator() {
     const basePuro   = baseDia + baseNoche + baseExtDia + baseExtNoc;
 
     const recNoche  = d.nightHours         * valorHora * pctNocNum;
-    const recDomDia = e ? d.dayHours       * valorHora * pctDomOrdNum : 0;
-    const recDomNoc = e ? d.nightHours     * valorHora * pctDomOrdNum : 0;
-    const recExtDia = (d.extraDayH   || 0) * valorHora * (e ? (pctDomOrdNum + pctExtDiaNum) : pctExtDiaNum);
-    const recExtNoc = (d.extraNightH || 0) * valorHora * (e ? (pctDomOrdNum + pctExtNocNum) : pctExtNocNum);
+    const recDomDia = e ? d.dayHours       * valorHora * pDom : 0;
+    const recDomNoc = e ? d.nightHours     * valorHora * pDom : 0;
+    const recExtDia = (d.extraDayH   || 0) * valorHora * (e ? (pDom + pctExtDiaNum) : pctExtDiaNum);
+    const recExtNoc = (d.extraNightH || 0) * valorHora * (e ? (pDom + pctExtNocNum) : pctExtNocNum);
+    const totalRecargos = recNoche + recDomDia + recDomNoc + recExtDia + recExtNoc;
 
     const compensatorioDinero = (e && d.compensatorioTipo === "dinero") ? (horasDiarias * valorHora) : 0;
 
+    const total = basePuro + compensatorioDinero;
+    // Lo que el día suma ADEMÁS del sueldo fijo: horas extras (hora + recargo), recargos y compensatorio en dinero
+    const adicional = baseExtDia + baseExtNoc + totalRecargos + compensatorioDinero;
+
     return {
-      total: basePuro + compensatorioDinero,
+      total,
+      adicional,
+      // Valor del día: con sueldo fijo = lo adicional; por horas = horas + recargos
+      valor: usaSueldoFijo ? adicional : total + totalRecargos,
       detail: {
         baseDia, baseNoche, baseExtDia, baseExtNoc,
         recNoche, recDomDia, recDomNoc, recExtDia, recExtNoc,
         compensatorioDinero,
-        totalRecargos: recNoche + recDomDia + recDomNoc + recExtDia + recExtNoc,
+        totalRecargos,
       },
     };
-  }, [valorHora, pctNocNum, pctDomOrdNum, pctExtDiaNum, pctExtNocNum, horasDiarias]);
+  }, [valorHora, pctNocNum, pctDomDe, pctExtDiaNum, pctExtNocNum, horasDiarias, usaSueldoFijo]);
 
   const calcExtrasVencidas = useCallback(() => {
     if (!contrato.mesVencido) return 0;
@@ -539,26 +731,33 @@ export default function SalaryCalculator() {
     const formatoAnterior =
       (p.extDayH     || 0) * valorHora * (1 + pctExtDiaNum) +
       (p.extNightH   || 0) * valorHora * (1 + pctExtNocNum) +
-      (p.extDomDayH  || 0) * valorHora * (1 + pctDomOrdNum + pctExtDiaNum) +
-      (p.extDomNightH|| 0) * valorHora * (1 + pctDomOrdNum + pctExtNocNum);
+      (p.extDomDayH  || 0) * valorHora * (1 + pctDomRef + pctExtDiaNum) +
+      (p.extDomNightH|| 0) * valorHora * (1 + pctDomRef + pctExtNocNum);
     return nuevoFormato > 0 ? nuevoFormato : formatoAnterior;
-  }, [contrato.mesVencido, extrasPeriodoAnterior, valorHora, pctExtDiaNum, pctExtNocNum, pctDomOrdNum]);
+  }, [contrato.mesVencido, extrasPeriodoAnterior, valorHora, pctExtDiaNum, pctExtNocNum, pctDomRef]);
 
   const {
     diasTrabajados, diasDescanso, diasCompensatorios, diasEspeciales, diasNoProgramados,
-    totalHorasPT, subtotalOrd, subtotalComp, subtotalCompDinero, subtotalExt,
+    totalHorasPT, horasExtrasPeriodo, valorExtrasPeriodo,
+    subtotalOrd, subtotalComp, subtotalCompDinero, subtotalExt,
     recargosEstePeriodo, totalRecargosEstePeriodo,
+    sueldoProp, diasSueldo,
     horasDescansoRem, descRemunerado, diasPeriodo, primaLegal,
-    auxTransp, devengadoBase, deducSalud, deducPension, totalDeduc,
+    auxTransp, devengadoBase, ibc, deducSalud, deducPension, totalDeduc,
     totalBruto, totalNeto,
   } = useMemo(() => {
-    const trabajados  = days.filter((d) => d.worked && !d.descanso && !d.compensatorio && !d.noProgramado);
-    const descanso    = days.filter((d) => d.descanso).length;
-    const noProg      = days.filter((d) => d.noProgramado).length;
-    const compDiasArr = days.filter((d) => d.compensatorio);
+    const trabajados  = daysEff.filter((d) => d.worked && !d.descanso && !d.compensatorio && !d.noProgramado);
+    const descanso    = daysEff.filter((d) => d.descanso).length;
+    const noProg      = daysEff.filter((d) => d.noProgramado).length;
+    const compDiasArr = daysEff.filter((d) => d.compensatorio);
     const compensatorios = compDiasArr.length;
     const especiales  = trabajados.filter((d) => d.especial).length;
-    const horasPT     = trabajados.reduce((s, d) => s + (d.dayHours || 0) + (d.nightHours || 0), 0);
+
+    // Horas ordinarias ingresadas (para auxilio proporcional y descanso) y total de horas con extras
+    const horasPT     = trabajados.reduce((s, d) => s + (d.workedDayH || 0) + (d.workedNightH || 0), 0);
+    const horasExt    = trabajados.reduce((s, d) => s + (d.extraDayH || 0) + (d.extraNightH || 0), 0);
+    const horasTotal  = trabajados.reduce((s, d) => s + (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0), 0);
+
     const subOrd      = trabajados.reduce((s, d) => s + calcDay(d).total, 0);
     const subComp     = compDiasArr.reduce((s, d) => s + calcDay(d).total, 0);
     const subCompDinero = trabajados
@@ -578,13 +777,34 @@ export default function SalaryCalculator() {
     }, { recNoche: 0, recDomDia: 0, recDomNoc: 0, recExtDia: 0, recExtNoc: 0 });
 
     const totalRec = Object.values(recargos).reduce((s, v) => s + v, 0);
+    const baseExtT = trabajados.reduce((s, d) => {
+      const det = calcDay(d).detail;
+      return s + (det.baseExtDia || 0) + (det.baseExtNoc || 0);
+    }, 0);
+    const valorExtras = baseExtT + recargos.recExtDia + recargos.recExtNoc; // hora extra completa (hora + recargo)
 
+    // Sueldo fijo mensual: 30 días en un mes completo; se descuentan los días no remunerados
+    const primero = daysEff[0];
+    const ultimo  = daysEff[daysEff.length - 1];
+    const mesCompleto = !!primero && primero.day === 1 &&
+      primero.month === ultimo.month && primero.year === ultimo.year &&
+      ultimo.day === new Date(ultimo.year, ultimo.month + 1, 0).getDate();
+    const diasPago  = mesCompleto ? 30 : Math.min(30, daysEff.length);
+    const diasSueldoN = Math.max(0, diasPago - noProg);
+    const sueldoP   = usaSueldoFijo ? Math.round(sueldoMensual * diasSueldoN / 30) : 0;
+
+    // Descanso remunerado aparte: solo cuando se paga por horas (con sueldo fijo ya está incluido)
     const DIVISOR_DESCANSO = 6.5;
-    const hrsDescanso  = isPartTime ? horasPT / DIVISOR_DESCANSO : 0;
-    const descRem      = isPartTime ? hrsDescanso * valorHora : 0;
-    const diasPer      = days.length;
-    const baseParaPrima = subOrd + subComp + descRem;
-    const prima = (isPartTime && inclPrima) ? (baseParaPrima * diasPer / 360 / 2) : 0;
+    const hrsDescanso  = (isPartTime && !usaSueldoFijo) ? horasPT / DIVISOR_DESCANSO : 0;
+    const descRem      = (isPartTime && !usaSueldoFijo) ? hrsDescanso * valorHora : 0;
+    const diasPer      = daysEff.length;
+
+    // Devengado salarial (sin auxilio de transporte ni prima)
+    const salarial = usaSueldoFijo
+      ? sueldoP + recargos.recNoche + recargos.recDomDia + recargos.recDomNoc + valorExtras + subCompDinero + subExt
+      : subOrd + subComp + totalRec + descRem + subExt;
+
+    const prima = (isPartTime && inclPrima) ? ((salarial - subExt) * diasPer / 360 / 2) : 0;
 
     const HORAS_MES_COMPLETO = 30 * horasDiarias;
     const auxBase = (contrato.auxTransporte && inclAuxTransp) ? auxTransporteValor : 0;
@@ -594,13 +814,13 @@ export default function SalaryCalculator() {
           : Math.round(auxBase * (horasPT / HORAS_MES_COMPLETO)))
       : auxBase;
 
-    const devBase  = subOrd + subComp + descRem + prima + aux;
-    const baseDeduc = isPartTime ? devBase : salario;
-    const dSalud   = (contrato.prestaciones && inclDeducciones) ? Math.round(baseDeduc * SALUD_PCT)   : 0;
-    const dPension = (contrato.prestaciones && inclDeducciones) ? Math.round(baseDeduc * PENSION_PCT) : 0;
-    const totalDed = dSalud + dPension;
+    // IBC completo: sueldo + recargos + extras (sin auxilio de transporte ni prima). Tope 25 SMMLV.
+    const ibcCalc  = Math.min(salarial, 25 * SMMLV_2026);
+    const dSalud   = (contrato.prestaciones && inclDeducciones) ? redondear100(ibcCalc * SALUD_PCT)   : 0;
+    const dPension = (contrato.prestaciones && inclDeducciones) ? redondear100(ibcCalc * PENSION_PCT) : 0;
+    const totalDed = dSalud + dPension + descAdicTotal;
 
-    const bruto = subOrd + subComp + subExt + aux + descRem + prima;
+    const bruto = salarial + aux + prima;
     const neto  = bruto - totalDed;
 
     return {
@@ -609,27 +829,60 @@ export default function SalaryCalculator() {
       diasCompensatorios: compensatorios,
       diasEspeciales: especiales,
       diasNoProgramados: noProg,
-      totalHorasPT: horasPT,
+      totalHorasPT: horasTotal,
+      horasExtrasPeriodo: horasExt,
+      valorExtrasPeriodo: valorExtras,
       subtotalOrd: subOrd,
       subtotalComp: subComp,
       subtotalCompDinero: subCompDinero,
       subtotalExt: subExt,
       recargosEstePeriodo: recargos,
       totalRecargosEstePeriodo: totalRec,
+      sueldoProp: sueldoP,
+      diasSueldo: diasSueldoN,
       horasDescansoRem: hrsDescanso,
       descRemunerado: descRem,
       diasPeriodo: diasPer,
       primaLegal: prima,
       auxTransp: aux,
-      devengadoBase: devBase,
+      devengadoBase: bruto,
+      ibc: ibcCalc,
       deducSalud: dSalud,
       deducPension: dPension,
       totalDeduc: totalDed,
       totalBruto: bruto,
       totalNeto: neto,
     };
-  }, [days, calcDay, calcExtrasVencidas, isPartTime, valorHora, inclPrima,
-    horasDiarias, contrato, inclAuxTransp, inclDeducciones, salario, auxCompletoPT, auxTransporteValor]);
+  }, [daysEff, calcDay, calcExtrasVencidas, isPartTime, valorHora, inclPrima,
+    horasDiarias, contrato, inclAuxTransp, inclDeducciones, auxCompletoPT, auxTransporteValor,
+    usaSueldoFijo, sueldoMensual, descAdicTotal]);
+
+  // Líneas de la liquidación (se usan en pantalla y en el PDF)
+  const lineasLiq = (() => {
+    const L = [];
+    if (usaSueldoFijo) {
+      L.push([`Sueldo fijo mensual (${diasSueldo} días · incluye descanso remunerado)`, sueldoProp]);
+    } else {
+      L.push([`Salario por horas (${fmtHrs(totalHorasPT)})`, subtotalOrd]);
+      if (subtotalComp > 0) L.push(["🔄 Compensatorio (día libre otorgado)", subtotalComp]);
+      if (descRemunerado > 0) L.push([`Descanso remunerado (${fmtHrs(horasDescansoRem)})`, descRemunerado]);
+    }
+    const rn = recargosEstePeriodo.recNoche;
+    const rd = recargosEstePeriodo.recDomDia + recargosEstePeriodo.recDomNoc;
+    const re = recargosEstePeriodo.recExtDia + recargosEstePeriodo.recExtNoc;
+    if (rn > 0) L.push([`🌙 Recargo nocturno (+${Math.round(pctNocNum * 100)}%)`, rn]);
+    if (rd > 0) L.push(["🟡 Recargo dominical/festivo", rd]);
+    if (usaSueldoFijo) {
+      if (valorExtrasPeriodo > 0) L.push([`⚡ Horas extras (${fmtHrs(horasExtrasPeriodo)}) · hora + recargo`, valorExtrasPeriodo]);
+      if (subtotalCompDinero > 0) L.push(["💰 Compensatorio pagado en dinero", subtotalCompDinero]);
+    } else if (re > 0) {
+      L.push([`⚡ Recargo de horas extras (${fmtHrs(horasExtrasPeriodo)})`, re]);
+    }
+    if (subtotalExt > 0) L.push(["Extras/recargos de períodos anteriores", subtotalExt]);
+    if (primaLegal > 0) L.push([`Prima legal (${diasPeriodo} días)`, primaLegal]);
+    if (auxTransp > 0) L.push(["Auxilio de transporte", auxTransp]);
+    return L;
+  })();
 
   // ── Resumen de horas y recargos por semana (dentro del mes) y por mes ──────
   const resumenHoras = useMemo(() => {
@@ -641,7 +894,7 @@ export default function SalaryCalculator() {
     });
     const sumar = (a, x) => { Object.keys(x).forEach((k) => { a[k] += x[k]; }); };
 
-    days.forEach((d) => {
+    daysEff.forEach((d) => {
       if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
       const det = calcDay(d).detail;
       const x = {
@@ -669,31 +922,31 @@ export default function SalaryCalculator() {
 
     const ordenar = (o) => Object.values(o).sort((a, b) => a.key.localeCompare(b.key));
     return { semanas: ordenar(semanas), meses: ordenar(meses) };
-  }, [days, calcDay, inicioSemana]);
+  }, [daysEff, calcDay, inicioSemana]);
 
   // ── Semanas del período (numeradas dentro de cada mes) ─────────────────────
   const semanasPeriodo = useMemo(() => {
     const map = {};
-    days.forEach((d) => {
+    daysEff.forEach((d) => {
       const w = getSemanaMes(d.year, d.month, d.day, inicioSemana);
       if (!map[w.key]) map[w.key] = { key: w.key, numero: w.numero, first: d, last: d };
       map[w.key].last = d;
     });
     return Object.values(map);
-  }, [days, inicioSemana]);
+  }, [daysEff, inicioSemana]);
 
   const resumenSemana = useMemo(() => {
     if (!semanaSel) return null;
     let horas = 0, total = 0, trabajados = 0;
-    days.forEach((d) => {
+    daysEff.forEach((d) => {
       if (getSemanaMes(d.year, d.month, d.day, inicioSemana).key !== semanaSel) return;
       if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
       horas += (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
-      total += calcDay(d).total;
+      total += calcDay(d).valor;
       trabajados++;
     });
     return { horas, total, trabajados };
-  }, [days, semanaSel, calcDay, inicioSemana]);
+  }, [daysEff, semanaSel, calcDay, inicioSemana]);
 
   const labelCorte = `${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`;
 
@@ -728,12 +981,15 @@ export default function SalaryCalculator() {
         deducSalud,
         deducPension,
         extrasPeriodoAnterior,
-        extrasPendientes: recargosEstePeriodo,
-        totalExtrasPendientes: totalRecargosEstePeriodo,
+        // Los recargos y extras ya se pagan en este mismo período (van en el bruto)
+        extrasPendientes: {},
+        totalExtrasPendientes: 0,
+        recargosPeriodo: recargosEstePeriodo,
         fecha: new Date().toLocaleDateString("es-CO"),
         daysSnapshot: days,
         salarioBase,
         inicioSemana,
+        extrasAuto, limiteSemanal, limiteSinDescanso, descAdic,
       };
       await saveBalance(labelCorte, entry);
       showAlert(
@@ -770,14 +1026,18 @@ export default function SalaryCalculator() {
       if (b.modoSueldoPT !== undefined) setModoSueldoPT(b.modoSueldoPT);
       if (b.salarioBasePT)           setSalarioBasePT(b.salarioBasePT);
       if (b.auxCompletoPT !== undefined) setAuxCompletoPT(b.auxCompletoPT);
-      if (b.domPct)                  setDomPct(b.domPct);
+      setDomPct(b.domPct && b.domPct !== "80" ? b.domPct : ""); // vacío = % legal por fecha
       if (b.diasXDescanso)           setDiasXDescanso(b.diasXDescanso);
       if (b.inclPrima !== undefined) setInclPrima(b.inclPrima);
       if (b.pctNocturno)             setPctNocturno(b.pctNocturno);
       if (b.pctExtDia)               setPctExtDia(b.pctExtDia);
       if (b.pctExtNoche)             setPctExtNoche(b.pctExtNoche);
-      if (b.pctDomOrd)                setPctDomOrd(b.pctDomOrd);
+      setPctDomOrd(b.pctDomOrd && b.pctDomOrd !== "75" ? b.pctDomOrd : "");
       if (b.inicioSemana !== undefined) setInicioSemana(b.inicioSemana);
+      if (b.extrasAuto !== undefined) setExtrasAuto(b.extrasAuto);
+      if (b.limiteSemanal) setLimiteSemanal(b.limiteSemanal);
+      if (b.limiteSinDescanso !== undefined) setLimiteSinDescanso(b.limiteSinDescanso);
+      if (Array.isArray(b.descAdic)) setDescAdic(b.descAdic);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
       const snapshot = (b.daysSnapshot || []).map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
@@ -795,9 +1055,11 @@ export default function SalaryCalculator() {
   // ── Exportar PDF (por semanas, día a día) ─────────────────────────────────
   const exportPDF = async () => {
     const pctNocTxt = Math.round(pctNocNum * 100);
-    const pctDomTxt = Math.round(pctDomOrdNum * 100);
     const pctExtDiaTxt = Math.round(pctExtDiaNum * 100);
     const pctExtNocTxt = Math.round(pctExtNocNum * 100);
+    const textoDom = domOverride !== null
+      ? `+${domOverride}%`
+      : "+80% hasta el 30-jun-2026 · +90% desde el 1-jul-2026";
 
     const aggVacio = () => ({
       dias: 0, horas: 0, ordDia: 0, ordNoche: 0, extDia: 0, extNoche: 0,
@@ -820,7 +1082,7 @@ export default function SalaryCalculator() {
           ` → trabajó ${fmtHrs(r.total)} (Diurnas ${fmtHrs(r.dayHours)}${noc})</div>`;
       }).filter(Boolean);
       if (partes.length) return partes.join("");
-      if ((d.dayHours || 0) + (d.nightHours || 0) > 0) {
+      if ((d.workedDayH || 0) + (d.workedNightH || 0) > 0) {
         return `<div class="turno">Horas ingresadas sin horario</div>`;
       }
       return "-";
@@ -830,10 +1092,11 @@ export default function SalaryCalculator() {
     const semanasResumen = []; // { label, mesKey, mesLabel, agg }
 
     semanasPeriodo.forEach((s) => {
-      const diasSem = days.filter(
+      const diasSem = daysEff.filter(
         (d) => getSemanaMes(d.year, d.month, d.day, inicioSemana).key === s.key
       );
       const aggS = aggVacio();
+      const infoLim = limitesSemUI[semanaRealKey(s.first, inicioSemana)];
 
       const filasSem = diasSem.map((d) => {
         const c = calcDay(d);
@@ -859,27 +1122,34 @@ export default function SalaryCalculator() {
             recNoche: det.recNoche || 0,
             recDom: (det.recDomDia || 0) + (det.recDomNoc || 0),
             recExt: (det.recExtDia || 0) + (det.recExtNoc || 0),
-            pago: c.total,
+            pago: c.valor,
           };
           x.horas = x.ordDia + x.ordNoche + x.extDia + x.extNoche;
           sumarAgg(aggS, x);
         } else if (d.compensatorio) {
-          aggS.pago += c.total;
+          aggS.pago += c.valor;
         }
 
-        // Recargos del día, explicados
+        // Recargos y extras del día, explicados
         const rec = [];
         if (trabajado) {
           if (det.recNoche > 0)
             rec.push(`Nocturno ${pctNocTxt}% sobre ${fmtHrs(d.nightHours)}: ${formatCOP(det.recNoche)}`);
           const rd = (det.recDomDia || 0) + (det.recDomNoc || 0);
           if (rd > 0)
-            rec.push(`${d.festivo ? "Festivo" : "Dominical"} ${pctDomTxt}%: ${formatCOP(rd)}`);
+            rec.push(`${d.festivo ? "Festivo" : "Dominical"} ${Math.round(pctDomDe(d) * 100)}%: ${formatCOP(rd)}`);
           if (det.recExtDia > 0)
-            rec.push(`Extra diurna ${fmtHrs(d.extraDayH)}: ${formatCOP(det.recExtDia)}`);
+            rec.push(`Extra diurna ${fmtHrs(d.extraDayH)}: ${formatCOP(usaSueldoFijo ? det.baseExtDia + det.recExtDia : det.recExtDia)}`);
           if (det.recExtNoc > 0)
-            rec.push(`Extra nocturna ${fmtHrs(d.extraNightH)}: ${formatCOP(det.recExtNoc)}`);
+            rec.push(`Extra nocturna ${fmtHrs(d.extraNightH)}: ${formatCOP(usaSueldoFijo ? det.baseExtNoc + det.recExtNoc : det.recExtNoc)}`);
         }
+
+        const autoH = (d.autoExtraDayH || 0) + (d.autoExtraNightH || 0);
+        const celdaHorario = trabajado
+          ? horarioHTML(d) + (autoH > 0
+              ? `<div class="extra">⚡ La semana superó ${limiteDe(d)} h: ${fmtHrs(autoH)} de este día se pagan como extra</div>`
+              : "")
+          : "-";
 
         const etiquetaDia = `${NOMBRES_DIA[new Date(d.year, d.month, d.day).getDay()]} ${d.day} ${MES_CORTO(d.month)}`;
         const extrasH = (d.extraDayH || 0) + (d.extraNightH || 0);
@@ -888,12 +1158,12 @@ export default function SalaryCalculator() {
         return `<tr style="background:${bg}">
           <td><b>${etiquetaDia}</b></td>
           <td>${tipo}</td>
-          <td>${trabajado ? horarioHTML(d) : "-"}</td>
+          <td>${celdaHorario}</td>
           <td class="n">${trabajado ? fmtHrs(d.dayHours) : "-"}</td>
           <td class="n">${trabajado ? fmtHrs(d.nightHours) : "-"}</td>
           <td class="n">${trabajado ? fmtHrs(extrasH) : "-"}</td>
           <td>${rec.length ? rec.join("<br/>") : "-"}</td>
-          <td class="n"><b>${pagaDia ? formatCOP(c.total) : "-"}</b></td>
+          <td class="n"><b>${pagaDia && c.valor > 0 ? formatCOP(c.valor) : "-"}</b></td>
         </tr>`;
       }).join("");
 
@@ -909,7 +1179,7 @@ export default function SalaryCalculator() {
           <thead><tr>
             <th style="width:11%">Día</th><th style="width:11%">Tipo</th><th style="width:30%">Horario (entrada → salida)</th>
             <th style="width:7%">H. diurnas</th><th style="width:7%">H. nocturnas</th><th style="width:7%">H. extras</th>
-            <th style="width:16%">Recargos</th><th style="width:11%">Pago del día</th>
+            <th style="width:16%">Recargos y extras</th><th style="width:11%">${usaSueldoFijo ? "Se suma al sueldo" : "Pago del día"}</th>
           </tr></thead>
           <tbody>
             ${filasSem}
@@ -927,6 +1197,7 @@ export default function SalaryCalculator() {
           <b>⏱️ Horas de la semana ${s.numero}: ${fmtHrs(aggS.horas)}</b>
           (ordinarias ${fmtHrs(aggS.ordDia + aggS.ordNoche)} = diurnas ${fmtHrs(aggS.ordDia)} + nocturnas ${fmtHrs(aggS.ordNoche)}
           · extras ${fmtHrs(aggS.extDia + aggS.extNoche)})
+          ${extrasAuto && infoLim ? `<br/>Límite de horas ordinarias de esta semana: <b>${infoLim.limite} h</b> ${infoLim.sinDescanso ? "(semana sin ningún día libre; la otra semana tiene 2)" : "(semana con día libre)"}` : ""}
         </div>
       </div>`;
     });
@@ -959,6 +1230,13 @@ export default function SalaryCalculator() {
     });
     if (mesesOrden.length > 1) filasResumen += filaAgg("TOTAL DEL PERÍODO", totalPeriodo, "tot");
 
+    const filaLiq = (l, v, signo = "") =>
+      `<div class="row"><span class="lbl">${l}</span><span class="val">${signo}${formatCOP(v)}</span></div>`;
+    const descAdicPDF = descAdic
+      .filter((x) => parseValor(x.valor) > 0)
+      .map((x) => filaLiq(`(-) ${x.nombre || "Descuento adicional"}`, parseValor(x.valor), "-"))
+      .join("");
+
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
     <title>Nomina ${labelCorte.replace(/[^0-9a-zA-Z]+/g, "-")}</title>
     <style>
@@ -976,6 +1254,7 @@ export default function SalaryCalculator() {
       .sumsem{background:#F5F3FF;border-left:4px solid #7C3AED;padding:6px 8px;font-size:11px;margin-bottom:6px}
       .turno{margin-bottom:3px;line-height:1.35}
       .noc{color:#4338CA;font-weight:700}
+      .extra{color:#B45309;font-weight:700;margin-top:3px}
       .guia{background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:8px 10px;font-size:10px;line-height:1.5;margin:10px 0}
       .box{background:#1E1B4B;color:#fff;border-radius:8px;padding:14px;margin-top:10px;page-break-inside:avoid}
       .row{display:flex;justify-content:space-between;margin-bottom:4px}
@@ -987,14 +1266,20 @@ export default function SalaryCalculator() {
       .tag{display:inline-block;background:#EEF2FF;color:#4F46E5;border-radius:4px;padding:2px 6px;font-size:10px}
     </style></head><body>
     <h1>💰 Liquidación de Nómina</h1>
-    <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · Tarifa hora: ${formatCOP(valorHora)}</h2>
+    <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · ${usaSueldoFijo ? `Sueldo fijo mensual: ${formatCOP(sueldoMensual)} · ` : ""}Valor hora: ${formatCOP(valorHora)}</h2>
     <span class="tag">Ley 2101: ${HORAS_SEMANA_2026}h/semana</span>
 
     <div class="guia">
       <b>Cómo leer este documento:</b> cada semana muestra, día por día, el horario trabajado (entrada → salida, 24 h),
       el descanso descontado y cuántas horas fueron <b>diurnas</b> (06:00–19:00) o <b>nocturnas</b> (19:00–06:00).<br/>
-      Recargos aplicados: nocturno <b>+${pctNocTxt}%</b> · dominical/festivo <b>+${pctDomTxt}%</b> ·
-      extra diurna <b>+${pctExtDiaTxt}%</b> · extra nocturna <b>+${pctExtNocTxt}%</b>.
+      Recargos aplicados: nocturno <b>+${pctNocTxt}%</b> · dominical/festivo <b>${textoDom}</b> ·
+      extra diurna <b>+${pctExtDiaTxt}%</b> · extra nocturna <b>+${pctExtNocTxt}%</b>.<br/>
+      ${extrasAuto
+        ? `Horas extras: lo que pasa de <b>${limiteSemanalNum} h</b> ordinarias en la semana (<b>${limiteSinDescansoNum} h</b> si esa semana no tuvo ningún día libre) se paga como extra (se toman las últimas horas trabajadas).`
+        : "Horas extras: solo las ingresadas manualmente."}
+      ${usaSueldoFijo
+        ? "El sueldo fijo mensual ya incluye el descanso remunerado; a él se le suman los recargos y las horas extras."
+        : ""}
       Al final de cada semana está la suma de horas, y al final del documento el total del mes.
     </div>
 
@@ -1005,36 +1290,35 @@ export default function SalaryCalculator() {
     <table>
       <thead><tr>
         <th>Semana / Mes</th><th>Días</th><th>Horas totales</th><th>H. diurnas</th><th>H. nocturnas</th><th>H. extras</th>
-        <th>Rec. nocturno</th><th>Rec. dom/fest</th><th>Rec. extras</th><th>Pago días</th>
+        <th>Rec. nocturno</th><th>Rec. dom/fest</th><th>Rec. extras</th><th>${usaSueldoFijo ? "Se suma al sueldo" : "Pago días"}</th>
       </tr></thead>
       <tbody>${filasResumen || '<tr><td colspan="10">Sin datos</td></tr>'}</tbody>
     </table>
     <p style="font-size:9px;color:#6B7280">
-      «Pago días» suma lo ganado por las horas de cada día (incluye los compensatorios). El descanso remunerado,
-      prima, auxilio de transporte y deducciones se detallan en la liquidación de abajo.
+      ${usaSueldoFijo
+        ? "«Se suma al sueldo» es lo que se agrega al sueldo fijo mensual: recargos, horas extras (hora + recargo) y compensatorios en dinero."
+        : "«Pago días» suma lo ganado por las horas de cada día con sus recargos (incluye los compensatorios)."}
+      El auxilio de transporte, la prima y las deducciones se detallan en la liquidación de abajo.
     </p>
 
     <div class="box">
-      <div class="row"><span class="lbl">Días trabajados</span><span class="val">${diasTrabajados.length}</span></div>
-      <div class="row"><span class="lbl">Días de descanso</span><span class="val">${diasDescanso}</span></div>
-      <div class="row"><span class="lbl">Días compensatorios (día libre)</span><span class="val">${diasCompensatorios}</span></div>
-      <div class="row"><span class="lbl">Días especiales</span><span class="val">${diasEspeciales}</span></div>
-      <div class="row"><span class="lbl">Días no programados (sin pago)</span><span class="val">${diasNoProgramados}</span></div>
-      <div class="row"><span class="lbl">Subtotal ordinario</span><span class="val">${formatCOP(subtotalOrd)}</span></div>
-      ${subtotalCompDinero > 0 ? `<div class="row"><span class="lbl">💰 Compensatorio pagado en dinero (incluido arriba)</span><span class="val">${formatCOP(subtotalCompDinero)}</span></div>` : ""}
-      ${subtotalComp > 0 ? `<div class="row"><span class="lbl">🔄 Compensatorio · día libre otorgado</span><span class="val">${formatCOP(subtotalComp)}</span></div>` : ""}
-      ${subtotalExt > 0 ? `<div class="row"><span class="lbl">⚡ Extras mes vencido</span><span class="val">${formatCOP(subtotalExt)}</span></div>` : ""}
-      ${descRemunerado > 0 ? `<div class="row"><span class="lbl">Descanso remunerado (${fmtHrs(horasDescansoRem)})</span><span class="val">${formatCOP(descRemunerado)}</span></div>` : ""}
-      ${primaLegal > 0 ? `<div class="row"><span class="lbl">Prima legal</span><span class="val">${formatCOP(primaLegal)}</span></div>` : ""}
-      ${auxTransp > 0   ? `<div class="row"><span class="lbl">Aux. transporte</span><span class="val">${formatCOP(auxTransp)}</span></div>` : ""}
+      ${filaLiq("Días trabajados", 0).replace(formatCOP(0), String(diasTrabajados.length))}
+      ${filaLiq("Días de descanso", 0).replace(formatCOP(0), String(diasDescanso))}
+      ${filaLiq("Días compensatorios (día libre)", 0).replace(formatCOP(0), String(diasCompensatorios))}
+      ${filaLiq("Días especiales", 0).replace(formatCOP(0), String(diasEspeciales))}
+      ${filaLiq("Días no programados (sin pago)", 0).replace(formatCOP(0), String(diasNoProgramados))}
+      <div style="border-top:1px solid #312E81;margin:8px 0"></div>
+      ${lineasLiq.map(([l, v]) => filaLiq(l, v)).join("")}
       <div class="grand">Bruto: ${formatCOP(totalBruto)}</div>
-      ${totalDeduc > 0 ? `
-      <div class="row" style="margin-top:8px"><span class="lbl">(-) Salud 4%</span><span class="val">-${formatCOP(deducSalud)}</span></div>
-      <div class="row"><span class="lbl">(-) Pensión 4%</span><span class="val">-${formatCOP(deducPension)}</span></div>` : ""}
+      <div style="border-top:1px solid #312E81;margin:8px 0"></div>
+      ${filaLiq("IBC (base para salud y pensión)", ibc)}
+      ${deducSalud > 0 ? filaLiq("(-) Salud 4% sobre el IBC", deducSalud, "-") : ""}
+      ${deducPension > 0 ? filaLiq("(-) Pensión 4% sobre el IBC", deducPension, "-") : ""}
+      ${descAdicPDF}
     </div>
     <div class="neto"><div class="neto-lbl">NETO A PAGAR</div><div class="neto-val">${formatCOP(totalNeto)}</div></div>
     <p style="font-size:9px;color:#9CA3AF;margin-top:16px">
-      Recargos CST Colombia · Ley 2101/2021 · Compensatorios CST art. 179-180 · Extras pagadas mes vencido
+      Recargos CST Colombia · Ley 2101/2021 · Ley 2466/2025 · Compensatorios CST art. 179-180
     </p></body></html>`;
 
     try {
@@ -1231,8 +1515,13 @@ export default function SalaryCalculator() {
   // ── Render día ────────────────────────────────────────────────────────────
   const renderDay = (item, index) => {
     const isExp = expandedDay === index;
-    const cost  = calcDay(item);
+    const eff   = daysEff[index] || item; // horas ya repartidas (ordinarias / extras)
+    const cost  = calcDay(eff);
     const isEsp = item.especial && !item.descanso && !item.compensatorio;
+    const pDomTxt = Math.round(pctDomDe(item) * 100);
+    const pNocTxt = Math.round(pctNocNum * 100);
+    const pExtDTxt = Math.round(pctExtDiaNum * 100);
+    const pExtNTxt = Math.round(pctExtNocNum * 100);
 
     if (item.noProgramado) {
       return (
@@ -1257,7 +1546,7 @@ export default function SalaryCalculator() {
               {`Día libre compensatorio (remunerado)${item.compensatorioPor ? ` · por ${item.compensatorioPor}` : ""}`}
             </Text>
           </View>
-          <Text style={ss.dayCostComp}>{formatCOP(cost.total)}</Text>
+          <Text style={ss.dayCostComp}>{usaSueldoFijo ? "en sueldo" : formatCOP(cost.valor)}</Text>
           <TouchableOpacity onPress={() => toggleCompensatorio(index)} style={ss.toggleBtn}>
             <Text style={ss.toggleBtnText}>Trabajé</Text>
           </TouchableOpacity>
@@ -1293,7 +1582,8 @@ export default function SalaryCalculator() {
     const textoHorario = turnosValidos.map((t) => `${t.entrada}–${t.salida}`).join(" · ");
     const horasCompactas =
       `${textoHorario ? '🕐' + textoHorario + ' · ' : ''}` +
-      `${item.dayHours > 0 ? '☀️' + fmtHrs(item.dayHours) + ' ' : ''}${item.nightHours > 0 ? '🌙' + fmtHrs(item.nightHours) : ''}`;
+      `${eff.dayHours > 0 ? '☀️' + fmtHrs(eff.dayHours) + ' ' : ''}${eff.nightHours > 0 ? '🌙' + fmtHrs(eff.nightHours) + ' ' : ''}` +
+      `${(eff.extraDayH + eff.extraNightH) > 0 ? '⚡' + fmtHrs(eff.extraDayH + eff.extraNightH) : ''}`;
 
     const jornada = calcularJornada(turnos);
 
@@ -1319,7 +1609,7 @@ export default function SalaryCalculator() {
             )}
             <Text style={ss.hoursCompact}>{horasCompactas}</Text>
           </View>
-          <Text style={[ss.dayCost, isEsp && ss.dayCostEsp]}>{formatCOP(cost.total)}</Text>
+          <Text style={[ss.dayCost, isEsp && ss.dayCostEsp]}>{usaSueldoFijo && cost.valor === 0 ? "—" : formatCOP(cost.valor)}</Text>
           <Text style={ss.expandIcon}>{isExp ? "▲" : "▼"}</Text>
           <View style={{ flexDirection: "row", gap: 4 }}>
             {isEsp ? (
@@ -1400,20 +1690,25 @@ export default function SalaryCalculator() {
               <Text style={ss.alertText}>⚠️ Hay turnos que se cruzan entre sí. Revisa las horas de entrada y salida.</Text>
             )}
 
+            {(eff.autoExtraDayH + eff.autoExtraNightH) > 0 && (
+              <Text style={[ss.cutDesc, { color: "#D97706", fontWeight: "700", marginTop: 6 }]}>
+                {`⚡ La semana superó ${limiteDe(eff)} h: ${fmtHrs(eff.autoExtraDayH + eff.autoExtraNightH)} de este día se pagan como extra`}
+              </Text>
+            )}
             <Text style={[ss.groupLabel, { marginTop: 10 }]}>Horas ordinarias</Text>
             <View style={ss.stepperGrid}>
-              <Stepper label={`☀️ Diurnas${isEsp ? " (+75%)" : ""}`}
+              <Stepper label={`☀️ Diurnas${isEsp ? ` (+${pDomTxt}%)` : ""}`}
                 value={item.dayHours} onChange={(v) => updateHours(index, "dayHours", v)} />
-              <Stepper label={`🌙 Nocturnas${isEsp ? " (+150%)" : " (+35%)"}`}
+              <Stepper label={`🌙 Nocturnas (+${isEsp ? pNocTxt + pDomTxt : pNocTxt}%)`}
                 value={item.nightHours} onChange={(v) => updateHours(index, "nightHours", v)} />
             </View>
             <Text style={[ss.groupLabel, { marginTop: 10, color: "#F59E0B" }]}>
-              ⚡ Horas extras (manuales · se pagan el siguiente corte)
+              ⚡ Horas extras adicionales (manuales)
             </Text>
             <View style={ss.stepperGrid}>
-              <Stepper label={`⚡☀️ Extra diurna${isEsp ? " (+100%)" : " (+25%)"}`}
+              <Stepper label={`⚡☀️ Extra diurna (+${isEsp ? pDomTxt + pExtDTxt : pExtDTxt}%)`}
                 value={item.extraDayH || 0} onChange={(v) => updateHours(index, "extraDayH", v)} />
-              <Stepper label={`⚡🌙 Extra nocturna${isEsp ? " (+150%)" : " (+75%)"}`}
+              <Stepper label={`⚡🌙 Extra nocturna (+${isEsp ? pDomTxt + pExtNTxt : pExtNTxt}%)`}
                 value={item.extraNightH || 0} onChange={(v) => updateHours(index, "extraNightH", v)} />
             </View>
             <View style={ss.desglose}>
@@ -1427,9 +1722,9 @@ export default function SalaryCalculator() {
                   <Text style={ss.desgloseValue}>{formatCOP(v)}</Text>
                 </View>
               ) : null)}
-              {((item.extraDayH > 0) || (item.extraNightH > 0)) && (<>
+              {((eff.extraDayH > 0) || (eff.extraNightH > 0)) && (<>
                 <View style={[ss.desgloseRow, { marginTop: 6 }]}>
-                  <Text style={[ss.desgloseLabel, { color: "#F59E0B" }]}>⚡ Extras (mes vencido)</Text>
+                  <Text style={[ss.desgloseLabel, { color: "#F59E0B" }]}>⚡ Horas extras</Text>
                 </View>
                 {cost.detail.recExtDia > 0 && (
                   <View style={ss.desgloseRow}>
@@ -1656,6 +1951,96 @@ export default function SalaryCalculator() {
             )}
           </View>
 
+          {/* Horas extras automáticas por semana */}
+          <View style={ss.card}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
+              <View style={{ flex: 1 }}>
+                <Text style={ss.sectionTitle}>⏱️ Horas extras automáticas</Text>
+                <Text style={ss.cutDesc}>
+                  Lo que pase del límite de horas ordinarias en la semana se paga como hora extra
+                  (ej.: semana de 48 h con límite 42 h → 6 h extra). Si una semana no tiene ningún día
+                  libre (la otra semana tiene 2), su límite sube a 50 h.
+                </Text>
+              </View>
+              <Switch value={extrasAuto} onValueChange={setExtrasAuto} trackColor={{ true: "#4F46E5" }} />
+            </View>
+            {extrasAuto && (
+              <>
+                <Text style={ss.cutLabel}>Límite de horas ordinarias por semana</Text>
+                <View style={ss.domRow}>
+                  <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
+                    returnKeyType="done" blurOnSubmit
+                    value={limiteSemanal} onChangeText={setLimiteSemanal} />
+                  <View style={ss.domInfo}>
+                    <Text style={ss.domInfoText}>{`${limiteSemanalNum}h / semana`}</Text>
+                    <Text style={ss.domInfoSub}>42 h desde el 15-jul-2026 (antes 44 h)</Text>
+                  </View>
+                </View>
+                <Text style={[ss.cutLabel, { marginTop: 10 }]}>Límite en semanas sin ningún día libre</Text>
+                <View style={ss.domRow}>
+                  <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
+                    returnKeyType="done" blurOnSubmit
+                    value={limiteSinDescanso} onChangeText={setLimiteSinDescanso} />
+                  <View style={ss.domInfo}>
+                    <Text style={ss.domInfoText}>{`${limiteSinDescansoNum}h / semana`}</Text>
+                    <Text style={ss.domInfoSub}>Semana de 7 días trabajados. 0 = no aplicar esta regla</Text>
+                  </View>
+                </View>
+                {semanasExtras.length > 0 && (
+                  <View style={ss.desglose}>
+                    <Text style={ss.desgloseTitle}>Semanas del período</Text>
+                    {semanasExtras.map((w) => (
+                      <View key={w.key} style={ss.desgloseRow}>
+                        <Text style={[ss.desgloseLabel, { flex: 1 }]}>
+                          {`${labelSemana(w.primero, w.ultimo)} · ${fmtHrs(w.horas)} · límite ${w.limite} h${w.sinDescanso ? " (sin día libre)" : ""}`}
+                        </Text>
+                        <Text style={[ss.desgloseValue, w.extras > 0 && { color: "#F59E0B" }]}>
+                          {w.extras > 0 ? `${fmtHrs(w.extras)} extra` : "sin extras"}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                {horasExtrasPeriodo > 0 && (
+                  <View style={ss.infoRow}>
+                    <Text style={ss.infoText}>Horas extras del período</Text>
+                    <Text style={ss.infoVal}>{fmtHrs(horasExtrasPeriodo)}</Text>
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+
+          {/* Descuentos adicionales */}
+          <View style={ss.card}>
+            <Text style={ss.sectionTitle}>➖ Descuentos adicionales</Text>
+            <Text style={ss.cutDesc}>Caja de compensación, libranza, etc. Se restan del neto.</Text>
+            {descAdic.map((x, i) => (
+              <View key={i} style={{ flexDirection: "row", gap: 8, marginBottom: 8, alignItems: "center" }}>
+                <TextInput style={[ss.cutInput, { flex: 1.4 }]} placeholder="Concepto" placeholderTextColor="#aaa"
+                  value={x.nombre}
+                  onChangeText={(tx) => setDescAdic((p) => p.map((r, k) => (k === i ? { ...r, nombre: tx } : r)))} />
+                <TextInput style={[ss.cutInput, { flex: 1 }]} placeholder="$ valor" placeholderTextColor="#aaa"
+                  keyboardType="numeric" returnKeyType="done" blurOnSubmit
+                  value={x.valor}
+                  onChangeText={(tx) => setDescAdic((p) => p.map((r, k) => (k === i ? { ...r, valor: tx } : r)))} />
+                <TouchableOpacity onPress={() => setDescAdic((p) => p.filter((_, k) => k !== i))}>
+                  <Text style={ss.turnoQuitar}>🗑</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity style={ss.addTurnoBtn}
+              onPress={() => setDescAdic((p) => [...p, { nombre: "", valor: "" }])}>
+              <Text style={ss.addTurnoText}>➕ Agregar descuento</Text>
+            </TouchableOpacity>
+            {descAdicTotal > 0 && (
+              <View style={ss.infoRow}>
+                <Text style={ss.infoText}>Total descuentos adicionales</Text>
+                <Text style={[ss.infoVal, { color: "#DC2626" }]}>{`-${formatCOP(descAdicTotal)}`}</Text>
+              </View>
+            )}
+          </View>
+
           {/* Recargos personalizables */}
           <View style={ss.card}>
             <TouchableOpacity style={ss.recargoToggleRow} onPress={() => setShowRecargos(!showRecargos)}>
@@ -1663,7 +2048,7 @@ export default function SalaryCalculator() {
                 <Text style={ss.sectionTitle}>⚙️ Recargos personalizados</Text>
                 <Text style={ss.cutDesc}>
                   {showRecargos ? "Toca para ocultar" :
-                    `Noc ${pctNocturno}% · Ext día ${pctExtDia}% · Ext noche ${pctExtNoche}% · Dom/fest ${isPartTime ? domPct : pctDomOrd}%`}
+                    `Noc ${pctNocturno}% · Ext día ${pctExtDia}% · Ext noche ${pctExtNoche}% · Dom/fest ${domOverride !== null ? domOverride + "%" : "auto " + Math.round(pctDomRef * 100) + "%"}`}
                 </Text>
               </View>
               <Text style={ss.expandIcon}>{showRecargos ? "▲" : "▼"}</Text>
@@ -1675,16 +2060,16 @@ export default function SalaryCalculator() {
                     ["🌙 Nocturno ord.",     pctNocturno, setPctNocturno, "35"],
                     ["⚡☀️ Extra diurno",    pctExtDia,   setPctExtDia,   "25"],
                     ["⚡🌙 Extra nocturno",  pctExtNoche, setPctExtNoche, "75"],
-                    [isPartTime ? "🟡 Dom/fest (D1)" : "🟡 Dom/fest ord.",
+                    ["🟡 Dom/fest (vacío = auto por fecha)",
                      isPartTime ? domPct : pctDomOrd,
                      isPartTime ? setDomPct : setPctDomOrd,
-                     isPartTime ? "80" : "75"],
+                     "90"],
                   ].map(([label, val, setter, def]) => (
                     <View key={label} style={ss.recargoInputItem}>
                       <Text style={ss.recargoInputLabel}>{label}</Text>
                       <View style={ss.recargoInputRow}>
                         <TextInput style={ss.recargoInput} keyboardType="numeric"
-                          returnKeyType="done" blurOnSubmit value={val} onChangeText={setter} />
+                          returnKeyType="done" blurOnSubmit value={val} onChangeText={setter} placeholder={def} placeholderTextColor="#bbb" />
                         <Text style={ss.recargoInputSuffix}>%</Text>
                       </View>
                       <Text style={ss.recargoMult}>{`×${(1 + (parseFloat(val) || parseFloat(def)) / 100).toFixed(2)}`}</Text>
@@ -1692,8 +2077,7 @@ export default function SalaryCalculator() {
                   ))}
                 </View>
                 <TouchableOpacity style={ss.resetBtn} onPress={() => {
-                  setPctNocturno("35"); setPctExtDia("25"); setPctExtNoche("75"); setPctDomOrd("75");
-                  if (isPartTime) setDomPct("80");
+                  setPctNocturno("35"); setPctExtDia("25"); setPctExtNoche("75"); setPctDomOrd(""); setDomPct("");
                 }}>
                   <Text style={ss.resetBtnText}>↺ Restaurar valores legales</Text>
                 </TouchableOpacity>
@@ -1708,15 +2092,15 @@ export default function SalaryCalculator() {
               <Text style={ss.cutLabel}>% Recargo dominical / festivo</Text>
               <View style={ss.domRow}>
                 <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
-                  returnKeyType="done" blurOnSubmit value={domPct} onChangeText={setDomPct} />
+                  returnKeyType="done" blurOnSubmit value={domPct} onChangeText={setDomPct} placeholder="Auto" placeholderTextColor="#bbb" />
                 <View style={ss.domInfo}>
-                  <Text style={ss.domInfoText}>{`×${(1 + (parseFloat(domPct) || 80) / 100).toFixed(2)}`}</Text>
-                  <Text style={ss.domInfoSub}>Tu liquidación muestra 80%</Text>
+                  <Text style={ss.domInfoText}>{domOverride !== null ? `×${(1 + domOverride / 100).toFixed(2)}` : `Auto ×${(1 + pctDomRef).toFixed(2)}`}</Text>
+                  <Text style={ss.domInfoSub}>Vacío = % legal por fecha (90% desde el 1-jul-2026)</Text>
                 </View>
               </View>
               <View style={ss.dividerLight} />
               <Text style={[ss.cutLabel, { marginTop: 10 }]}>Descanso remunerado</Text>
-              <Text style={ss.toggleSub}>1 día por cada N días trabajados</Text>
+              <Text style={ss.toggleSub}>{usaSueldoFijo ? "Incluido en el sueldo fijo mensual" : "1 día por cada N días trabajados"}</Text>
               <View style={ss.domRow}>
                 <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
                   returnKeyType="done" blurOnSubmit value={diasXDescanso} onChangeText={setDiasXDescanso} />
@@ -1784,8 +2168,8 @@ export default function SalaryCalculator() {
           {/* Extras mes vencido */}
           {contrato.mesVencido && (
             <View style={ss.card}>
-              <Text style={ss.sectionTitle}>⚡ Horas extras (mes vencido)</Text>
-              <Text style={ss.cutDesc}>Extras del período anterior que se pagan en este corte.</Text>
+              <Text style={ss.sectionTitle}>⚡ Extras/recargos de períodos anteriores (opcional)</Text>
+              <Text style={ss.cutDesc}>Solo si te quedó algo pendiente de un corte anterior. Los recargos y extras de este período ya se suman al bruto.</Text>
               <View style={ss.stepperGrid}>
                 <Stepper label="⚡☀️ Extra diurna (+25%)"
                   value={extrasPeriodoAnterior.extDayH}
@@ -1966,89 +2350,40 @@ export default function SalaryCalculator() {
 
               <View style={ss.divider} />
 
-              <View style={ss.totalRow}>
-                <Text style={ss.totalLabel}>{`1088 · Salario horas (${fmtHrs(totalHorasPT)})`}</Text>
-                <Text style={ss.totalValue}>{formatCOP(subtotalOrd)}</Text>
-              </View>
-              {subtotalExt > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>⚡ Recargos mes vencido</Text>
-                  <Text style={ss.totalValue}>{formatCOP(subtotalExt)}</Text>
+              {lineasLiq.map(([l, v]) => (
+                <View key={l} style={ss.totalRow}>
+                  <Text style={ss.totalLabel}>{l}</Text>
+                  <Text style={ss.totalValue}>{formatCOP(v)}</Text>
                 </View>
-              )}
-              {subtotalCompDinero > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={[ss.totalLabel, { color: "#FCD34D" }]}>💰 Compensatorio pagado en dinero</Text>
-                  <Text style={[ss.totalValue, { color: "#FCD34D" }]}>{formatCOP(subtotalCompDinero)}</Text>
-                </View>
-              )}
-              {subtotalComp > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>🔄 Compensatorio (día libre otorgado)</Text>
-                  <Text style={ss.totalValue}>{formatCOP(subtotalComp)}</Text>
-                </View>
-              )}
-              {descRemunerado > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>{`1414 · Descanso remunerado PT (${fmtHrs(horasDescansoRem)})`}</Text>
-                  <Text style={ss.totalValue}>{formatCOP(descRemunerado)}</Text>
-                </View>
-              )}
-              {primaLegal > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>{`1230 · Prima legal (${diasPeriodo} días)`}</Text>
-                  <Text style={ss.totalValue}>{formatCOP(primaLegal)}</Text>
-                </View>
-              )}
-              {auxTransp > 0 && (
-                <View style={ss.totalRow}>
-                  <Text style={ss.totalLabel}>1035 · Aux. transporte PT</Text>
-                  <Text style={ss.totalValue}>{formatCOP(auxTransp)}</Text>
-                </View>
-              )}
+              ))}
 
               <View style={ss.grandTotalBox}>
                 <Text style={ss.grandTotalLabel}>TOTAL BRUTO</Text>
                 <Text style={ss.grandTotalValue}>{formatCOP(totalBruto)}</Text>
               </View>
 
-              {totalDeduc > 0 && (<>
-                <View style={ss.divider} />
-                {[["(-) Salud 4%", deducSalud], ["(-) Pensión 4%", deducPension]].map(([l, v]) => (
-                  <View key={l} style={ss.totalRow}>
-                    <Text style={ss.totalLabel}>{l}</Text>
-                    <Text style={[ss.totalValue, { color: "#FCA5A5" }]}>{`-${formatCOP(v)}`}</Text>
-                  </View>
-                ))}
-              </>)}
+              <View style={ss.divider} />
+              <View style={ss.totalRow}>
+                <Text style={ss.totalLabel}>IBC (base para salud y pensión)</Text>
+                <Text style={ss.totalValue}>{formatCOP(ibc)}</Text>
+              </View>
+              {[["(-) Salud 4%", deducSalud], ["(-) Pensión 4%", deducPension]].map(([l, v]) => v > 0 ? (
+                <View key={l} style={ss.totalRow}>
+                  <Text style={ss.totalLabel}>{l}</Text>
+                  <Text style={[ss.totalValue, { color: "#FCA5A5" }]}>{`-${formatCOP(v)}`}</Text>
+                </View>
+              ) : null)}
+              {descAdic.filter((x) => parseValor(x.valor) > 0).map((x, i) => (
+                <View key={`da${i}`} style={ss.totalRow}>
+                  <Text style={ss.totalLabel}>{`(-) ${x.nombre || "Descuento adicional"}`}</Text>
+                  <Text style={[ss.totalValue, { color: "#FCA5A5" }]}>{`-${formatCOP(parseValor(x.valor))}`}</Text>
+                </View>
+              ))}
 
               <View style={ss.netoBox}>
                 <Text style={ss.netoLabel}>NETO A PAGAR ESTE PERÍODO</Text>
                 <Text style={ss.netoValue}>{formatCOP(totalNeto)}</Text>
               </View>
-
-              {totalRecargosEstePeriodo > 0 && (
-                <View style={ss.extrasBox}>
-                  <Text style={ss.extrasTitle}>⚡ Recargos de este período (mes vencido)</Text>
-                  <Text style={ss.extrasSub}>Se pagarán en el siguiente corte</Text>
-                  {[
-                    ["🌙 Recargo nocturno",   recargosEstePeriodo.recNoche],
-                    ["🟡 Dom/fest diurno",    recargosEstePeriodo.recDomDia],
-                    ["🟡🌙 Dom/fest nocturno",recargosEstePeriodo.recDomNoc],
-                    ["⚡☀️ Extra diurna",     recargosEstePeriodo.recExtDia],
-                    ["⚡🌙 Extra nocturna",   recargosEstePeriodo.recExtNoc],
-                  ].map(([l, v]) => v > 0 ? (
-                    <View key={l} style={ss.totalRow}>
-                      <Text style={[ss.totalLabel, { color: "#FCD34D" }]}>{l}</Text>
-                      <Text style={[ss.totalValue, { color: "#FCD34D" }]}>{formatCOP(v)}</Text>
-                    </View>
-                  ) : null)}
-                  <View style={ss.extrasTotalRow}>
-                    <Text style={ss.extrasTotalLabel}>Total pendiente próximo pago</Text>
-                    <Text style={ss.extrasTotalValue}>{formatCOP(totalRecargosEstePeriodo)}</Text>
-                  </View>
-                </View>
-              )}
 
               <View style={ss.actionRow}>
                 <TouchableOpacity style={ss.saveBtn} onPress={handleSave}>
