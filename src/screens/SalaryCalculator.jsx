@@ -127,6 +127,34 @@ const labelSemana = (a, b) =>
 // automáticamente (sin importar si la semana es de 42 o 50 horas).
 // El exceso se toma primero de las horas nocturnas (van al final del turno).
 const r2 = (v) => Math.round(v * 100) / 100;
+const parseHoraMinutos = (hora) => {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hora || "");
+  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+};
+
+const calcularHorasTurnos = (turnos = []) => {
+  let minutosDiurnos = 0;
+  let minutosNocturnos = 0;
+
+  turnos.forEach((turno) => {
+    const inicio = parseHoraMinutos(turno.start);
+    const fin = parseHoraMinutos(turno.end);
+    if (inicio === null || fin === null || inicio === fin) return;
+
+    const finExtendido = fin < inicio ? fin + 1440 : fin;
+    for (let minuto = inicio; minuto < finExtendido; minuto++) {
+      const minutoDelDia = minuto % 1440;
+      if (minutoDelDia >= 360 && minutoDelDia < 1140) minutosDiurnos++;
+      else minutosNocturnos++;
+    }
+  });
+
+  return {
+    dayHours: r2(minutosDiurnos / 60),
+    nightHours: r2(minutosNocturnos / 60),
+  };
+};
+
 const splitHoras = (d, limite) => {
   const dia = d.dayHours || 0;
   const noche = d.nightHours || 0;
@@ -182,6 +210,7 @@ const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => 
       especial: festivo || domingo,
       dayHours: 0, nightHours: 0,
       extraDayH: 0, extraNightH: 0,
+      shifts: [{ start: "", end: "" }],
     });
     cursor.setDate(cursor.getDate() + 1);
   }
@@ -338,6 +367,7 @@ export default function SalaryCalculator() {
             noProgramado: false,
             dayHours:   d.dayHours   || 0,
             nightHours: d.nightHours || 0,
+            shifts: [],
           };
         }
       });
@@ -984,6 +1014,20 @@ export default function SalaryCalculator() {
   }), []);
 
   const updateHours = useCallback((i, field, val) => setDays((p) => p.map((d, idx) => idx === i ? { ...d, [field]: val } : d)), []);
+  const updateShift = useCallback((i, shiftIndex, field, value) => setDays((prev) => prev.map((day, index) => {
+    if (index !== i) return day;
+    const shifts = [...(day.shifts || [])];
+    shifts[shiftIndex] = { ...shifts[shiftIndex], [field]: value };
+    return { ...day, shifts, ...calcularHorasTurnos(shifts) };
+  })), []);
+  const addShift = useCallback((i) => setDays((prev) => prev.map((day, index) => index === i
+    ? { ...day, shifts: [...(day.shifts || []), { start: "", end: "" }] }
+    : day)), []);
+  const removeShift = useCallback((i, shiftIndex) => setDays((prev) => prev.map((day, index) => {
+    if (index !== i) return day;
+    const shifts = (day.shifts || []).filter((_, currentIndex) => currentIndex !== shiftIndex);
+    return { ...day, shifts, ...calcularHorasTurnos(shifts) };
+  })), []);
 
   // ── Render día ────────────────────────────────────────────────────────────
   const renderDay = (item, index) => {
@@ -1097,13 +1141,65 @@ export default function SalaryCalculator() {
 
         {isExp && (
           <View style={ss.expandedContent}>
-            <Text style={ss.groupLabel}>Horas ordinarias</Text>
-            <View style={ss.stepperGrid}>
-              <Stepper label={`☀️ Diurnas${isEsp ? " (+75%)" : ""}`}
-                value={item.dayHours} onChange={(v) => updateHours(index, "dayHours", v)} />
-              <Stepper label={`🌙 Nocturnas${isEsp ? " (+150%)" : " (+35%)"}`}
-                value={item.nightHours} onChange={(v) => updateHours(index, "nightHours", v)} />
-            </View>
+            <Text style={ss.groupLabel}>🕒 Horario de trabajo</Text>
+            <Text style={ss.cutDesc}>
+              Registra cada tramo por separado en formato 24 h (p. ej., 07:00 a 16:00).
+              Puedes agregar turnos intermedios. Diurno: 06:00–19:00; nocturno: 19:00–06:00.
+            </Text>
+            {(item.shifts || []).map((shift, shiftIndex) => (
+              <View key={`shift-${shiftIndex}`} style={ss.shiftRow}>
+                <View style={ss.shiftInputWrap}>
+                  <Text style={ss.shiftLabel}>Entrada</Text>
+                  <TextInput
+                    style={ss.shiftInput}
+                    value={shift.start || ""}
+                    placeholder="07:00"
+                    maxLength={5}
+                    onChangeText={(value) => updateShift(index, shiftIndex, "start", value)}
+                    accessibilityLabel={`Hora de entrada del turno ${shiftIndex + 1}`}
+                  />
+                </View>
+                <View style={ss.shiftInputWrap}>
+                  <Text style={ss.shiftLabel}>Salida</Text>
+                  <TextInput
+                    style={ss.shiftInput}
+                    value={shift.end || ""}
+                    placeholder="16:00"
+                    maxLength={5}
+                    onChangeText={(value) => updateShift(index, shiftIndex, "end", value)}
+                    accessibilityLabel={`Hora de salida del turno ${shiftIndex + 1}`}
+                  />
+                </View>
+                <TouchableOpacity
+                  style={ss.removeShiftBtn}
+                  onPress={() => removeShift(index, shiftIndex)}
+                  accessibilityLabel={`Quitar turno ${shiftIndex + 1}`}>
+                  <Text style={ss.removeShiftText}>✕</Text>
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity style={ss.addShiftBtn} onPress={() => addShift(index)}>
+              <Text style={ss.addShiftText}>＋ Agregar otro turno</Text>
+            </TouchableOpacity>
+            {(item.shifts || []).some((shift) =>
+              parseHoraMinutos(shift.start) !== null && parseHoraMinutos(shift.end) !== null &&
+              shift.start !== shift.end
+            ) && (
+              <Text style={ss.shiftSummary}>
+                {`☀️ ${fmtHrs(item.dayHours)} diurnas · 🌙 ${fmtHrs(item.nightHours)} nocturnas`}
+              </Text>
+            )}
+            {(item.shifts || []).length === 0 && (
+              <>
+                <Text style={ss.groupLabel}>Horas ordinarias ingresadas manualmente</Text>
+                <View style={ss.stepperGrid}>
+                  <Stepper label={`☀️ Diurnas${isEsp ? " (+75%)" : ""}`}
+                    value={item.dayHours} onChange={(v) => updateHours(index, "dayHours", v)} />
+                  <Stepper label={`🌙 Nocturnas${isEsp ? " (+150%)" : " (+35%)"}`}
+                    value={item.nightHours} onChange={(v) => updateHours(index, "nightHours", v)} />
+                </View>
+              </>
+            )}
             {h.autoExtra > 0 && (
               <Text style={ss.autoExtraNote}>
                 {`⚡ ${fmtHrs(h.autoExtra)} pasan automáticamente a extras (más de ${limiteTurnoNum}h en el turno)`}
@@ -1515,19 +1611,7 @@ export default function SalaryCalculator() {
               <Text style={ss.applyBtnText}>{`📅 Cargar período ${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`}</Text>
             </TouchableOpacity>
           </View>
-          ) : (
-            <View style={ss.card}>
-              <View style={ss.periodoRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.cutLabel}>Período en curso</Text>
-                  <Text style={ss.periodoTxt}>{`📆 ${labelCorte}`}</Text>
-                </View>
-                <TouchableOpacity style={ss.newPeriodBtnSm} onPress={confirmarNuevoPeriodo}>
-                  <Text style={ss.newPeriodBtnText}>🆕 Período nuevo</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
+          ) : null}
 
           {/* Extras mes vencido */}
           {contrato.mesVencido && (
@@ -1632,6 +1716,9 @@ export default function SalaryCalculator() {
                 </Text>
                 <TouchableOpacity style={ss.scanBtn} onPress={() => setScannerVisible(true)}>
                   <Text style={ss.scanBtnText}>📷 Escanear</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={ss.newPeriodBtnSm} onPress={confirmarNuevoPeriodo}>
+                  <Text style={ss.newPeriodBtnText}>🆕 Nuevo</Text>
                 </TouchableOpacity>
               </View>
               <Text style={ss.cutDesc}>
@@ -1999,6 +2086,15 @@ const ss = StyleSheet.create({
   modoBtnTextActive:{ color:"#fff" },
   scanBtn:     { backgroundColor:"#EEF2FF", borderRadius:8, paddingHorizontal:10, paddingVertical:6 },
   scanBtnText: { fontSize:12, color:"#4F46E5", fontWeight:"600" },
+  shiftRow: { flexDirection:"row", alignItems:"flex-end", gap:8, marginBottom:8 },
+  shiftInputWrap: { flex:1 },
+  shiftLabel: { fontSize:11, color:"#6B7280", marginBottom:4 },
+  shiftInput: { borderWidth:1, borderColor:"#E5E7EB", borderRadius:8, padding:9, fontSize:15, color:"#111", backgroundColor:"#FAFAFA" },
+  removeShiftBtn: { height:40, width:40, alignItems:"center", justifyContent:"center", borderRadius:8, backgroundColor:"#FEF2F2" },
+  removeShiftText: { color:"#DC2626", fontSize:16, fontWeight:"700" },
+  addShiftBtn: { alignSelf:"flex-start", backgroundColor:"#EEF2FF", borderRadius:8, paddingHorizontal:10, paddingVertical:7, marginBottom:8 },
+  addShiftText: { color:"#4F46E5", fontSize:12, fontWeight:"600" },
+  shiftSummary: { fontSize:12, color:"#374151", fontWeight:"600", marginBottom:8 },
   domRow:     { flexDirection:"row", gap:10, alignItems:"center", marginTop:6 },
   domInfo:    { flex:1, justifyContent:"center" },
   domInfoText:{ fontSize:13, fontWeight:"600", color:"#4F46E5" },
