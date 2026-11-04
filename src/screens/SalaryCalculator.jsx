@@ -855,6 +855,96 @@ export default function SalaryCalculator() {
       </tr>`;
     }).join("");
 
+    const semanasDetallePDF = {};
+    days.forEach((d) => {
+      const weekKey = getISOWeekKey(d.year, d.month, d.day);
+      if (!semanasDetallePDF[weekKey]) {
+        semanasDetallePDF[weekKey] = {
+          key: weekKey,
+          first: d,
+          last: d,
+          filas: [],
+          horasDiurnas: 0,
+          horasNocturnas: 0,
+          horasExtraDiurnas: 0,
+          horasExtraNocturnas: 0,
+          recargoNocturno: 0,
+          recargosExtra: 0,
+          subtotal: 0,
+        };
+      }
+
+      const semana = semanasDetallePDF[weekKey];
+      semana.last = d;
+      const cost = calcDay(d);
+      const detail = cost.detail || {};
+      const h = splitHoras(d, limiteTurnoNum);
+      const mostrarHoras = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+      const activeShifts = mostrarHoras ? getTurnosActivos(d) : [];
+      const horarios = activeShifts
+        .map((shift) => {
+          if (parseHoraMinutos(shift.start) === null || parseHoraMinutos(shift.end) === null) return null;
+          const descanso = shift.breakMinutes === 30 ? " (descanso 30 min)" : "";
+          return `${formatearHoraEntrada(shift.start)}–${formatearHoraEntrada(shift.end)}${descanso}`;
+        })
+        .filter(Boolean);
+      const horario = horarios.length > 0
+        ? horarios.join("<br/>")
+        : d.descanso ? "Descanso"
+          : d.compensatorio ? "Compensatorio"
+            : mostrarHoras ? "Horario no registrado" : "—";
+      const horasDia = mostrarHoras ? h.ordDay : 0;
+      const horasNoche = mostrarHoras ? h.ordNight : 0;
+      const horasExtraDia = mostrarHoras ? h.exDay : 0;
+      const horasExtraNoche = mostrarHoras ? h.exNight : 0;
+      const recargoNoche = (detail.recNoche || 0) + (detail.recDomNoc || 0);
+      const recargosExtra = (detail.recExtDia || 0) + (detail.recExtNoc || 0);
+      const subtotalDia = d.worked && !d.descanso && !d.noProgramado ? cost.total : 0;
+
+      semana.horasDiurnas += horasDia;
+      semana.horasNocturnas += horasNoche;
+      semana.horasExtraDiurnas += horasExtraDia;
+      semana.horasExtraNocturnas += horasExtraNoche;
+      semana.recargoNocturno += recargoNoche;
+      semana.recargosExtra += recargosExtra;
+      semana.subtotal += subtotalDia;
+      semana.filas.push(`<tr>
+        <td>${d.label}</td>
+        <td>${horario}</td>
+        <td>${mostrarHoras ? `${fmtHrs(horasDia)} día<br/>${fmtHrs(horasNoche)} noche` : "—"}</td>
+        <td class="num">${recargoNoche > 0 ? formatCOP(recargoNoche) : "—"}</td>
+        <td>${mostrarHoras ? `${fmtHrs(horasExtraDia)} día<br/>${fmtHrs(horasExtraNoche)} noche` : "—"}</td>
+        <td class="num">${recargosExtra > 0 ? formatCOP(recargosExtra) : "—"}</td>
+        <td class="num">${subtotalDia > 0 ? formatCOP(subtotalDia) : "—"}</td>
+      </tr>`);
+    });
+
+    const detalleSemanasPDF = Object.values(semanasDetallePDF).map((semana) => {
+      const titulo = `Semana ${semana.key.split("-W")[1]} · ${labelSemana(semana.first, semana.last)} ${semana.first.year}`;
+      const totalHorasDia = semana.horasDiurnas + semana.horasNocturnas;
+      const totalHorasExtra = semana.horasExtraDiurnas + semana.horasExtraNocturnas;
+      return `<section class="week-block">
+        <h4>${titulo}</h4>
+        <table class="weekly-table">
+          <thead><tr>
+            <th>Fecha</th><th>Horario realizado</th><th>Horas trabajadas</th>
+            <th>Recargo nocturno</th><th>Horas extra</th><th>Recargos extra</th><th>Subtotal</th>
+          </tr></thead>
+          <tbody>
+            ${semana.filas.join("")}
+            <tr class="week-total">
+              <td colspan="2">TOTAL SEMANAL</td>
+              <td>${fmtHrs(semana.horasDiurnas)} día<br/>${fmtHrs(semana.horasNocturnas)} noche<br/><strong>${fmtHrs(totalHorasDia + totalHorasExtra)} total</strong></td>
+              <td class="num">${formatCOP(semana.recargoNocturno)}</td>
+              <td>${fmtHrs(semana.horasExtraDiurnas)} día<br/>${fmtHrs(semana.horasExtraNocturnas)} noche<br/><strong>${fmtHrs(totalHorasExtra)} total</strong></td>
+              <td class="num">${formatCOP(semana.recargosExtra)}</td>
+              <td class="num">${formatCOP(semana.subtotal)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>`;
+    }).join("");
+
     const semanasPDF = resumenHoras.semanas.map((s) =>
       `<tr><td>Semana ${s.numero} (${s.key.split("-W")[0]})</td><td style="font-weight:600">${fmtHrs(s.horas)}</td></tr>`
     ).join("");
@@ -886,6 +976,14 @@ export default function SalaryCalculator() {
       .tag{display:inline-block;background:#EEF2FF;color:#4F46E5;border-radius:4px;padding:2px 6px;font-size:10px}
       .twocol{display:flex;gap:16px}
       .twocol > div{flex:1}
+      .week-block{margin:14px 0;page-break-inside:avoid}
+      .week-block h4{color:#3730A3;font-size:12px;margin:10px 0 5px}
+      .weekly-table{table-layout:fixed;font-size:9px}
+      .weekly-table th,.weekly-table td{padding:5px 3px;font-size:9px;vertical-align:top;overflow-wrap:anywhere}
+      .weekly-table th{font-size:8px}
+      .weekly-table .num{text-align:right}
+      .week-total{background:#EEF2FF;font-weight:600}
+      .week-total td{border-top:2px solid #818CF8}
     </style></head><body>
     <h1>💰 Liquidación de Nómina</h1>
     <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · Tarifa hora: ${formatCOP(valorHora)}</h2>
@@ -902,6 +1000,9 @@ export default function SalaryCalculator() {
         <tbody>${mesesPDF || '<tr><td colspan="2">Sin datos</td></tr>'}</tbody></table>
       </div>
     </div>
+
+    <h3>📅 Detalle semanal de horarios, horas y recargos</h3>
+    ${detalleSemanasPDF || "<p>Sin semanas con datos en este período.</p>"}
 
     <h3>Detalle de días</h3>
     <table><thead><tr><th>Día</th><th>Tipo</th><th>Hrs ord. día</th><th>Hrs ord. noche</th><th>Hrs extra</th><th>Subtotal</th></tr></thead>
