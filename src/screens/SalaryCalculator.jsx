@@ -128,8 +128,15 @@ const labelSemana = (a, b) =>
 // El exceso se toma primero de las horas nocturnas (van al final del turno).
 const r2 = (v) => Math.round(v * 100) / 100;
 const parseHoraMinutos = (hora) => {
-  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hora || "");
-  return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+  const value = String(hora || "");
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+  if (match) return Number(match[1]) * 60 + Number(match[2]);
+
+  const digits = value.replace(/\D/g, "");
+  if (!/^\d{4}$/.test(digits)) return null;
+  const hours = Number(digits.slice(0, 2));
+  const minutes = Number(digits.slice(2));
+  return hours < 24 && minutes < 60 ? hours * 60 + minutes : null;
 };
 
 const calcularHorasTurnos = (turnos = []) => {
@@ -142,7 +149,11 @@ const calcularHorasTurnos = (turnos = []) => {
     if (inicio === null || fin === null || inicio === fin) return;
 
     const finExtendido = fin < inicio ? fin + 1440 : fin;
+    const duracion = finExtendido - inicio;
+    const descanso = Math.min(Number(turno.breakMinutes) || 0, duracion);
+    const inicioDescanso = inicio + Math.floor((duracion - descanso) / 2);
     for (let minuto = inicio; minuto < finExtendido; minuto++) {
+      if (minuto >= inicioDescanso && minuto < inicioDescanso + descanso) continue;
       const minutoDelDia = minuto % 1440;
       if (minutoDelDia >= 360 && minutoDelDia < 1140) minutosDiurnos++;
       else minutosNocturnos++;
@@ -152,6 +163,7 @@ const calcularHorasTurnos = (turnos = []) => {
   return {
     dayHours: r2(minutosDiurnos / 60),
     nightHours: r2(minutosNocturnos / 60),
+    totalHours: r2((minutosDiurnos + minutosNocturnos) / 60),
   };
 };
 
@@ -1017,11 +1029,30 @@ export default function SalaryCalculator() {
   const updateShift = useCallback((i, shiftIndex, field, value) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
     const shifts = [...(day.shifts || [])];
-    shifts[shiftIndex] = { ...shifts[shiftIndex], [field]: value };
+    const updatedValue = field === "start" || field === "end"
+      ? String(value).replace(/\D/g, "").slice(0, 4)
+      : value;
+    shifts[shiftIndex] = { ...shifts[shiftIndex], [field]: updatedValue };
     const hasCompleteShift = shifts.some((shift) =>
       parseHoraMinutos(shift.start) !== null &&
       parseHoraMinutos(shift.end) !== null &&
       shift.start !== shift.end
+    );
+    return {
+      ...day,
+      shifts,
+      ...(hasCompleteShift ? calcularHorasTurnos(shifts) : {}),
+    };
+  })), []);
+  const toggleShiftBreak = useCallback((i, shiftIndex) => setDays((prev) => prev.map((day, index) => {
+    if (index !== i) return day;
+    const shifts = [...(day.shifts || [])];
+    const shift = shifts[shiftIndex];
+    shifts[shiftIndex] = { ...shift, breakMinutes: shift.breakMinutes === 30 ? 0 : 30 };
+    const hasCompleteShift = shifts.some((currentShift) =>
+      parseHoraMinutos(currentShift.start) !== null &&
+      parseHoraMinutos(currentShift.end) !== null &&
+      currentShift.start !== currentShift.end
     );
     return {
       ...day,
@@ -1152,38 +1183,52 @@ export default function SalaryCalculator() {
           <View style={ss.expandedContent}>
             <Text style={ss.groupLabel}>🕒 Horario de trabajo</Text>
             <Text style={ss.cutDesc}>
-              Registra cada tramo por separado en formato 24 h (p. ej., 07:00 a 16:00).
-              Puedes agregar turnos intermedios. Diurno: 06:00–19:00; nocturno: 19:00–06:00.
+              Registra cada tramo con cuatro números, sin dos puntos (ej.: 0700 a 1600).
+              Puedes agregar turnos intermedios.
+              Diurno: 06:00–19:00; nocturno: 19:00–06:00.
             </Text>
             {(item.shifts || []).map((shift, shiftIndex) => (
-              <View key={`shift-${shiftIndex}`} style={ss.shiftRow}>
-                <View style={ss.shiftInputWrap}>
-                  <Text style={ss.shiftLabel}>Entrada</Text>
-                  <TextInput
-                    style={ss.shiftInput}
-                    value={shift.start || ""}
-                    placeholder="07:00"
-                    maxLength={5}
-                    onChangeText={(value) => updateShift(index, shiftIndex, "start", value)}
-                    accessibilityLabel={`Hora de entrada del turno ${shiftIndex + 1}`}
-                  />
-                </View>
-                <View style={ss.shiftInputWrap}>
-                  <Text style={ss.shiftLabel}>Salida</Text>
-                  <TextInput
-                    style={ss.shiftInput}
-                    value={shift.end || ""}
-                    placeholder="16:00"
-                    maxLength={5}
-                    onChangeText={(value) => updateShift(index, shiftIndex, "end", value)}
-                    accessibilityLabel={`Hora de salida del turno ${shiftIndex + 1}`}
-                  />
+              <View key={`shift-${shiftIndex}`} style={ss.shiftCard}>
+                <View style={ss.shiftRow}>
+                  <View style={ss.shiftInputWrap}>
+                    <Text style={ss.shiftLabel}>Entrada (HHMM)</Text>
+                    <TextInput
+                      style={ss.shiftInput}
+                      value={String(shift.start || "").replace(/\D/g, "").slice(0, 4)}
+                      placeholder="0700"
+                      keyboardType="numeric"
+                      maxLength={4}
+                      onChangeText={(value) => updateShift(index, shiftIndex, "start", value)}
+                      accessibilityLabel={`Hora de entrada del turno ${shiftIndex + 1}`}
+                    />
+                  </View>
+                  <View style={ss.shiftInputWrap}>
+                    <Text style={ss.shiftLabel}>Salida (HHMM)</Text>
+                    <TextInput
+                      style={ss.shiftInput}
+                      value={String(shift.end || "").replace(/\D/g, "").slice(0, 4)}
+                      placeholder="1600"
+                      keyboardType="numeric"
+                      maxLength={4}
+                      onChangeText={(value) => updateShift(index, shiftIndex, "end", value)}
+                      accessibilityLabel={`Hora de salida del turno ${shiftIndex + 1}`}
+                    />
+                  </View>
+                  <TouchableOpacity
+                    style={ss.removeShiftBtn}
+                    onPress={() => removeShift(index, shiftIndex)}
+                    accessibilityLabel={`Quitar turno ${shiftIndex + 1}`}>
+                    <Text style={ss.removeShiftText}>✕</Text>
+                  </TouchableOpacity>
                 </View>
                 <TouchableOpacity
-                  style={ss.removeShiftBtn}
-                  onPress={() => removeShift(index, shiftIndex)}
-                  accessibilityLabel={`Quitar turno ${shiftIndex + 1}`}>
-                  <Text style={ss.removeShiftText}>✕</Text>
+                  style={[ss.breakBtn, shift.breakMinutes === 30 && ss.breakBtnActive]}
+                  onPress={() => toggleShiftBreak(index, shiftIndex)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${shift.breakMinutes === 30 ? "Desactivar" : "Marcar que tomé"} descanso de 30 minutos en el turno ${shiftIndex + 1}`}>
+                  <Text style={[ss.breakBtnText, shift.breakMinutes === 30 && ss.breakBtnTextActive]}>
+                    {shift.breakMinutes === 30 ? "✓ Descanso tomado · −30 min" : "＋ Tuve descanso de 30 min"}
+                  </Text>
                 </TouchableOpacity>
               </View>
             ))}
@@ -1195,7 +1240,7 @@ export default function SalaryCalculator() {
               shift.start !== shift.end
             ) && (
               <Text style={ss.shiftSummary}>
-                {`☀️ ${fmtHrs(item.dayHours)} diurnas · 🌙 ${fmtHrs(item.nightHours)} nocturnas`}
+                {`Total trabajado: ${fmtHrs(item.totalHours ?? ((item.dayHours || 0) + (item.nightHours || 0)))} · ☀️ ${fmtHrs(item.dayHours)} diurnas · 🌙 ${fmtHrs(item.nightHours)} nocturnas`}
               </Text>
             )}
             {(item.shifts || []).length === 0 && (
@@ -2101,12 +2146,17 @@ const ss = StyleSheet.create({
   modoBtnTextActive:{ color:"#fff" },
   scanBtn:     { backgroundColor:"#EEF2FF", borderRadius:8, paddingHorizontal:10, paddingVertical:6 },
   scanBtnText: { fontSize:12, color:"#4F46E5", fontWeight:"600" },
-  shiftRow: { flexDirection:"row", alignItems:"flex-end", gap:8, marginBottom:8 },
+  shiftCard: { marginBottom:10 },
+  shiftRow: { flexDirection:"row", alignItems:"flex-end", gap:8, marginBottom:6 },
   shiftInputWrap: { flex:1 },
   shiftLabel: { fontSize:11, color:"#6B7280", marginBottom:4 },
   shiftInput: { borderWidth:1, borderColor:"#E5E7EB", borderRadius:8, padding:9, fontSize:15, color:"#111", backgroundColor:"#FAFAFA" },
   removeShiftBtn: { height:40, width:40, alignItems:"center", justifyContent:"center", borderRadius:8, backgroundColor:"#FEF2F2" },
   removeShiftText: { color:"#DC2626", fontSize:16, fontWeight:"700" },
+  breakBtn: { alignSelf:"flex-start", minHeight:36, justifyContent:"center", paddingHorizontal:10, borderRadius:8, backgroundColor:"#FEF3C7" },
+  breakBtnActive: { backgroundColor:"#DCFCE7" },
+  breakBtnText: { color:"#92400E", fontSize:11, fontWeight:"600" },
+  breakBtnTextActive: { color:"#166534" },
   addShiftBtn: { alignSelf:"flex-start", backgroundColor:"#EEF2FF", borderRadius:8, paddingHorizontal:10, paddingVertical:7, marginBottom:8 },
   addShiftText: { color:"#4F46E5", fontSize:12, fontWeight:"600" },
   shiftSummary: { fontSize:12, color:"#374151", fontWeight:"600", marginBottom:8 },
