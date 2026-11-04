@@ -1018,7 +1018,16 @@ export default function SalaryCalculator() {
     if (index !== i) return day;
     const shifts = [...(day.shifts || [])];
     shifts[shiftIndex] = { ...shifts[shiftIndex], [field]: value };
-    return { ...day, shifts, ...calcularHorasTurnos(shifts) };
+    const hasCompleteShift = shifts.some((shift) =>
+      parseHoraMinutos(shift.start) !== null &&
+      parseHoraMinutos(shift.end) !== null &&
+      shift.start !== shift.end
+    );
+    return {
+      ...day,
+      shifts,
+      ...(hasCompleteShift ? calcularHorasTurnos(shifts) : {}),
+    };
   })), []);
   const addShift = useCallback((i) => setDays((prev) => prev.map((day, index) => index === i
     ? { ...day, shifts: [...(day.shifts || []), { start: "", end: "" }] }
@@ -1191,7 +1200,13 @@ export default function SalaryCalculator() {
             )}
             {(item.shifts || []).length === 0 && (
               <>
-                <Text style={ss.groupLabel}>Horas ordinarias ingresadas manualmente</Text>
+                <Text style={ss.cutDesc}>
+                  Este día no tiene horario guardado. Puedes ingresar la entrada y salida, o ajustar las horas manualmente.
+                </Text>
+                <TouchableOpacity style={ss.addShiftBtn} onPress={() => addShift(index)}>
+                  <Text style={ss.addShiftText}>＋ Ingresar horario de entrada y salida</Text>
+                </TouchableOpacity>
+                <Text style={ss.groupLabel}>Horas ordinarias manuales</Text>
                 <View style={ss.stepperGrid}>
                   <Stepper label={`☀️ Diurnas${isEsp ? " (+75%)" : ""}`}
                     value={item.dayHours} onChange={(v) => updateHours(index, "dayHours", v)} />
