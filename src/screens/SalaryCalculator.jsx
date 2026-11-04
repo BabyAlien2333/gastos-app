@@ -282,7 +282,6 @@ export default function SalaryCalculator() {
   const [selRecargos,    setSelRecargos]    = useState([]);
 
   const [modalContrato,  setModalContrato]  = useState(false);
-  const [modalCorte,     setModalCorte]     = useState(false); // ventana emergente de la fecha de corte
   const [modalMesInicio, setModalMesInicio] = useState(false);
   const [modalMesFin,    setModalMesFin]    = useState(false);
   const [balanceModal,   setBalanceModal]   = useState(false);
@@ -355,7 +354,6 @@ export default function SalaryCalculator() {
     setCorteCargado(true);
     setExpandedDay(null);
     setSemanaSel(null);
-    setModalCorte(false); // cierra la ventana emergente al cargar
 
   }, [diaInicio, diaFin, mesInicio, mesFin]);
 
@@ -591,7 +589,6 @@ export default function SalaryCalculator() {
     setSemanaSel(null);
     setExtrasPeriodoAnterior({ extDayH: 0, extNightH: 0, extDomDayH: 0, extDomNightH: 0 });
     setRecargosOrigen([]);
-    setModalCorte(true); // abre la ventana emergente para elegir la fecha de corte
   };
 
   const confirmarNuevoPeriodo = () => {
@@ -749,10 +746,9 @@ export default function SalaryCalculator() {
         noProgramado: false,
         ...d,
       }));
-      // Restaurar las fechas de corte del balance (ya no hay formulario visible)
-      const primero = snapshot[0];
-      const ultimo  = snapshot[snapshot.length - 1];
-      if (primero && ultimo) {
+      if (snapshot.length > 0) {
+        const primero = snapshot[0];
+        const ultimo  = snapshot[snapshot.length - 1];
         setDiaInicio(String(primero.day));
         setMesInicio(primero.month);
         setDiaFin(String(ultimo.day));
@@ -1484,26 +1480,54 @@ export default function SalaryCalculator() {
             </View>
           )}
 
-          {/* Fecha de corte: solo un resumen; el selector va en una ventana emergente */}
+          {/* Fecha de corte: solo se muestra al crear un período nuevo */}
+          {!corteCargado ? (
           <View style={ss.card}>
-            {corteCargado ? (
-              <>
-                <Text style={ss.sectionTitle}>📆 Período activo</Text>
-                <Text style={ss.cutDesc}>{labelCorte}</Text>
-                <TouchableOpacity style={ss.newPeriodBtn} onPress={confirmarNuevoPeriodo}>
-                  <Text style={ss.newPeriodBtnText}>🆕 Nuevo balance</Text>
+            <Text style={ss.sectionTitle}>📆 Fecha de corte</Text>
+            <Text style={ss.cutDesc}>Define el período de nómina. Puede cruzar meses.</Text>
+            <View style={ss.cutRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={ss.cutLabel}>Desde — día</Text>
+                <TextInput style={ss.cutInput} keyboardType="numeric"
+                  returnKeyType="done" blurOnSubmit value={diaInicio} onChangeText={setDiaInicio} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={ss.cutLabel}>Mes</Text>
+                <TouchableOpacity style={ss.cutMesBtn} onPress={() => setModalMesInicio(true)}>
+                  <Text style={ss.cutMesBtnText}>{MESES[mesInicio].label}</Text>
                 </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                <Text style={ss.sectionTitle}>📆 Fecha de corte</Text>
-                <Text style={ss.cutDesc}>Elige el período de nómina para empezar.</Text>
-                <TouchableOpacity style={ss.applyBtn} onPress={() => setModalCorte(true)}>
-                  <Text style={ss.applyBtnText}>📆 Elegir fecha de corte</Text>
+              </View>
+            </View>
+            <View style={ss.cutRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={ss.cutLabel}>Hasta — día</Text>
+                <TextInput style={ss.cutInput} keyboardType="numeric"
+                  returnKeyType="done" blurOnSubmit value={diaFin} onChangeText={setDiaFin} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={ss.cutLabel}>Mes</Text>
+                <TouchableOpacity style={ss.cutMesBtn} onPress={() => setModalMesFin(true)}>
+                  <Text style={ss.cutMesBtnText}>{MESES[mesFin].label}</Text>
                 </TouchableOpacity>
-              </>
-            )}
+              </View>
+            </View>
+            <TouchableOpacity style={ss.applyBtn} onPress={cargarCorte}>
+              <Text style={ss.applyBtnText}>{`📅 Cargar período ${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`}</Text>
+            </TouchableOpacity>
           </View>
+          ) : (
+            <View style={ss.card}>
+              <View style={ss.periodoRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={ss.cutLabel}>Período en curso</Text>
+                  <Text style={ss.periodoTxt}>{`📆 ${labelCorte}`}</Text>
+                </View>
+                <TouchableOpacity style={ss.newPeriodBtnSm} onPress={confirmarNuevoPeriodo}>
+                  <Text style={ss.newPeriodBtnText}>🆕 Período nuevo</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Extras mes vencido */}
           {contrato.mesVencido && (
@@ -1847,80 +1871,34 @@ export default function SalaryCalculator() {
           </TouchableOpacity>
         </Modal>
 
-        {/* Ventana emergente: Fecha de corte (con los selectores de mes adentro) */}
-        <Modal visible={modalCorte} transparent animationType="slide" onRequestClose={() => setModalCorte(false)}>
-          <View style={ss.modalOverlay}>
+        <Modal visible={modalMesInicio} transparent animationType="slide" onRequestClose={() => setModalMesInicio(false)}>
+          <TouchableOpacity style={ss.modalOverlay} activeOpacity={1} onPress={() => setModalMesInicio(false)}>
             <View style={ss.modalBox}>
-              <Text style={ss.modalTitle}>📆 Fecha de corte</Text>
-              <Text style={ss.cutDesc}>Define el período de nómina. Puede cruzar meses.</Text>
-
-              <View style={ss.cutRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.cutLabel}>Desde — día</Text>
-                  <TextInput style={ss.cutInput} keyboardType="numeric"
-                    returnKeyType="done" blurOnSubmit value={diaInicio} onChangeText={setDiaInicio} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.cutLabel}>Mes</Text>
-                  <TouchableOpacity style={ss.cutMesBtn} onPress={() => setModalMesInicio(true)}>
-                    <Text style={ss.cutMesBtnText}>{MESES[mesInicio].label}</Text>
+              <Text style={ss.modalTitle}>Mes de inicio</Text>
+              <FlatList data={MESES} keyExtractor={(m) => m.label}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={ss.monthItem} onPress={() => { setMesInicio(item.month); setModalMesInicio(false); }}>
+                    <Text style={[ss.monthItemText, mesInicio === item.month && { color: "#4F46E5", fontWeight: "700" }]}>{item.label}</Text>
+                    {mesInicio === item.month && <Text style={{ color: "#4F46E5" }}>✓</Text>}
                   </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={ss.cutRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.cutLabel}>Hasta — día</Text>
-                  <TextInput style={ss.cutInput} keyboardType="numeric"
-                    returnKeyType="done" blurOnSubmit value={diaFin} onChangeText={setDiaFin} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={ss.cutLabel}>Mes</Text>
-                  <TouchableOpacity style={ss.cutMesBtn} onPress={() => setModalMesFin(true)}>
-                    <Text style={ss.cutMesBtnText}>{MESES[mesFin].label}</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <TouchableOpacity style={ss.applyBtn} onPress={cargarCorte}>
-                <Text style={ss.applyBtnText}>{`📅 Cargar período ${diaInicio}/${pad(mesInicio + 1)} → ${diaFin}/${pad(mesFin + 1)}`}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[ss.recCancel, { marginTop: 10 }]} onPress={() => setModalCorte(false)}>
-                <Text style={ss.recCancelText}>Cancelar</Text>
-              </TouchableOpacity>
-
-              {/* Selectores de mes (dentro de la ventana para que abran encima) */}
-              <Modal visible={modalMesInicio} transparent animationType="slide" onRequestClose={() => setModalMesInicio(false)}>
-                <TouchableOpacity style={ss.modalOverlay} activeOpacity={1} onPress={() => setModalMesInicio(false)}>
-                  <View style={ss.modalBox}>
-                    <Text style={ss.modalTitle}>Mes de inicio</Text>
-                    <FlatList data={MESES} keyExtractor={(m) => m.label}
-                      renderItem={({ item }) => (
-                        <TouchableOpacity style={ss.monthItem} onPress={() => { setMesInicio(item.month); setModalMesInicio(false); }}>
-                          <Text style={[ss.monthItemText, mesInicio === item.month && { color: "#4F46E5", fontWeight: "700" }]}>{item.label}</Text>
-                          {mesInicio === item.month && <Text style={{ color: "#4F46E5" }}>✓</Text>}
-                        </TouchableOpacity>
-                      )} />
-                  </View>
-                </TouchableOpacity>
-              </Modal>
-
-              <Modal visible={modalMesFin} transparent animationType="slide" onRequestClose={() => setModalMesFin(false)}>
-                <TouchableOpacity style={ss.modalOverlay} activeOpacity={1} onPress={() => setModalMesFin(false)}>
-                  <View style={ss.modalBox}>
-                    <Text style={ss.modalTitle}>Mes de fin</Text>
-                    <FlatList data={MESES} keyExtractor={(m) => m.label}
-                      renderItem={({ item }) => (
-                        <TouchableOpacity style={ss.monthItem} onPress={() => { setMesFin(item.month); setModalMesFin(false); }}>
-                          <Text style={[ss.monthItemText, mesFin === item.month && { color: "#4F46E5", fontWeight: "700" }]}>{item.label}</Text>
-                          {mesFin === item.month && <Text style={{ color: "#4F46E5" }}>✓</Text>}
-                        </TouchableOpacity>
-                      )} />
-                  </View>
-                </TouchableOpacity>
-              </Modal>
+                )} />
             </View>
-          </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal visible={modalMesFin} transparent animationType="slide" onRequestClose={() => setModalMesFin(false)}>
+          <TouchableOpacity style={ss.modalOverlay} activeOpacity={1} onPress={() => setModalMesFin(false)}>
+            <View style={ss.modalBox}>
+              <Text style={ss.modalTitle}>Mes de fin</Text>
+              <FlatList data={MESES} keyExtractor={(m) => m.label}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={ss.monthItem} onPress={() => { setMesFin(item.month); setModalMesFin(false); }}>
+                    <Text style={[ss.monthItemText, mesFin === item.month && { color: "#4F46E5", fontWeight: "700" }]}>{item.label}</Text>
+                    {mesFin === item.month && <Text style={{ color: "#4F46E5" }}>✓</Text>}
+                  </TouchableOpacity>
+                )} />
+            </View>
+          </TouchableOpacity>
         </Modal>
 
         <Modal visible={balanceModal} transparent animationType="slide" onRequestClose={() => setBalanceModal(false)}>
@@ -2124,6 +2102,9 @@ const ss = StyleSheet.create({
   acumValue: { color:"#fff", fontSize:24, fontWeight:"800", marginTop:4 },
   autoExtraNote: { fontSize:11, color:"#B45309", backgroundColor:"#FFFBEB", borderRadius:8, padding:8, marginTop:8 },
   newPeriodBtn:     { marginTop:10, borderWidth:1, borderColor:"#4F46E5", borderRadius:10, padding:12, alignItems:"center", backgroundColor:"#EEF2FF" },
+  periodoRow:     { flexDirection:"row", alignItems:"center", gap:10 },
+  periodoTxt:     { fontSize:16, fontWeight:"700", color:"#1E1B4B" },
+  newPeriodBtnSm: { borderWidth:1, borderColor:"#4F46E5", borderRadius:10, paddingHorizontal:12, paddingVertical:10, backgroundColor:"#EEF2FF" },
   newPeriodBtnText: { color:"#4F46E5", fontWeight:"700", fontSize:13 },
   importBtn:     { borderWidth:1, borderColor:"#F59E0B", borderRadius:10, padding:12, alignItems:"center", backgroundColor:"#FFFBEB", marginBottom:10 },
   importBtnText: { color:"#B45309", fontWeight:"700", fontSize:13 },
