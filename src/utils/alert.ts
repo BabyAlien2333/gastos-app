@@ -1,13 +1,6 @@
-import { Alert, Platform } from 'react-native';
-
-type AlertButton = {
-  text?: string;
-  onPress?: () => void;
-  style?: 'default' | 'cancel' | 'destructive';
-};
+import { Alert, Platform, type AlertButton } from 'react-native';
 
 export function showAlert(title: string, message?: string, buttons?: AlertButton[]) {
-  // Móvil (iOS / Android): alerta nativa
   if (Platform.OS !== 'web') {
     Alert.alert(title, message, buttons);
     return;
@@ -24,8 +17,8 @@ export function showAlert(title: string, message?: string, buttons?: AlertButton
 
   // Con 2+ botones, simulamos un confirm: el botón "cancel" es cancelar,
   // cualquier otro botón se dispara si el usuario acepta.
-  const cancelBtn = buttons.find(b => b.style === 'cancel');
-  const confirmBtn = buttons.find(b => b.style !== 'cancel') || buttons[buttons.length - 1];
+  const cancelBtn = buttons.find((b) => b.style === 'cancel');
+  const confirmBtn = buttons.find((b) => b.style !== 'cancel') || buttons[buttons.length - 1];
 
   if (window.confirm(text)) {
     confirmBtn?.onPress?.();
