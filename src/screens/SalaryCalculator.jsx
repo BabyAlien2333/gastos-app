@@ -260,6 +260,24 @@ const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => 
   return resultado;
 };
 
+const generarDiasDeBalance = (balance) => {
+  if (Array.isArray(balance.daysSnapshot) && balance.daysSnapshot.length > 0) {
+    return balance.daysSnapshot;
+  }
+
+  const fechas = /^(\d{1,2})\/(\d{1,2})\s*→\s*(\d{1,2})\/(\d{1,2})$/.exec(
+    String(balance.corte || balance.key || "")
+  );
+  if (!fechas) return null;
+
+  return generarDiasCorte(
+    Number(fechas[1]),
+    Number(fechas[2]) - 1,
+    Number(fechas[3]),
+    Number(fechas[4]) - 1
+  );
+};
+
 // ─── Compensatorios (CST art. 179-180, Ley 789/2002) ─────────────────────────
 const sugerirCompensatorios = (arr) => {
   const nuevo = arr.map((d) => ({ ...d }));
@@ -368,17 +386,17 @@ export default function SalaryCalculator() {
     const q = query(collection(db, "salary_balances"), where("uid", "==", user.uid));
     const unsub = onSnapshot(q, (snap) => {
       const data = {};
-      snap.forEach((d) => { data[d.id] = d.data(); });
+      snap.forEach((d) => { data[d.id] = { ...d.data(), _docId: d.id }; });
       setSavedBalances(data);
       setLoadingBalances(false);
     }, () => setLoadingBalances(false));
     return () => unsub();
   }, []);
 
-  const saveBalance = async (key, entry) => {
+  const saveBalance = async (key, entry, existingDocId) => {
     const user = auth.currentUser;
     if (!user) return showAlert("Error", "Debes iniciar sesión para guardar.");
-    const docId = `${user.uid}_${key.replace(/[^a-zA-Z0-9]/g, "_")}`;
+    const docId = existingDocId || `${user.uid}_${key.replace(/[^a-zA-Z0-9]/g, "_")}`;
     await setDoc(doc(db, "salary_balances", docId), { ...entry, uid: user.uid });
   };
 
@@ -722,7 +740,7 @@ export default function SalaryCalculator() {
   };
 
   const isEditing = corteCargado && !!savedBalances[
-    Object.keys(savedBalances).find(k => savedBalances[k].corte === labelCorte)
+    Object.keys(savedBalances).find(k => (savedBalances[k].corte || savedBalances[k].key) === labelCorte)
   ];
 
   const handleSave = async () => {
@@ -765,7 +783,10 @@ export default function SalaryCalculator() {
         salarioBase,
         jornadaContractual,
       };
-      await saveBalance(labelCorte, entry);
+      const balanceExistente = Object.values(savedBalances).find(
+        (balance) => (balance.corte || balance.key) === labelCorte
+      );
+      await saveBalance(labelCorte, entry, balanceExistente?._docId);
       for (const origen of recargosOrigen) {
         await marcarRecargosCobrados(origen, labelCorte);
       }
@@ -793,7 +814,8 @@ export default function SalaryCalculator() {
   };
 
   const handleEdit = (b) => {
-    if (!b.daysSnapshot) {
+    const balanceDays = generarDiasDeBalance(b);
+    if (!balanceDays) {
       showAlert("Balance antiguo", "Este balance no tiene datos para editar.");
       return;
     }
@@ -818,7 +840,7 @@ export default function SalaryCalculator() {
       if (b.maxHorasTurno)           setMaxHorasTurno(b.maxHorasTurno);
       setRecargosOrigen(b.recargosOrigen || []);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
-      const snapshot = (b.daysSnapshot || []).map((d) => ({
+      const snapshot = balanceDays.map((d) => ({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
         noProgramado: false,
         ...d,
@@ -1206,12 +1228,13 @@ export default function SalaryCalculator() {
       ...calcularHorasTurnos(activeShifts),
     };
   })), []);
-  const toggleShiftBreak = useCallback((i, shiftIndex) => setDays((prev) => prev.map((day, index) => {
+  const toggleDayBreak = useCallback((i) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
     const shifts = [...getTurnosDelDia(day)];
-    const shift = shifts[shiftIndex];
-    if (!shift) return day;
-    shifts[shiftIndex] = { ...shift, breakMinutes: shift.breakMinutes === 30 ? 0 : 30 };
+    const hasBreak = shifts.some((shift) => shift.breakMinutes === 30);
+    shifts.forEach((shift, shiftIndex) => {
+      shifts[shiftIndex] = { ...shift, breakMinutes: !hasBreak && shiftIndex === 0 ? 30 : 0 };
+    });
     return {
       ...day,
       shifts,
@@ -1243,6 +1266,7 @@ export default function SalaryCalculator() {
     const shifts = getTurnosDelDia(item);
     const splitShift = item.splitShift ?? shifts.length > 1;
     const activeShifts = getTurnosActivos(item);
+    const hasDayBreak = shifts.some((shift) => shift.breakMinutes === 30);
     const hasCompleteShift = activeShifts.some((shift) =>
       parseHoraMinutos(shift.start) !== null &&
       parseHoraMinutos(shift.end) !== null &&
@@ -1388,21 +1412,21 @@ export default function SalaryCalculator() {
                     />
                   </View>
                 </View>
-                <TouchableOpacity
-                  style={[ss.scheduleOption, shift.breakMinutes === 30 && ss.scheduleOptionActive]}
-                  onPress={() => toggleShiftBreak(index, shiftIndex)}
-                  accessibilityRole="checkbox"
-                  accessibilityState={{ checked: shift.breakMinutes === 30 }}>
-                  <View style={[ss.checkbox, shift.breakMinutes === 30 && ss.checkboxChecked]}>
-                    {shift.breakMinutes === 30 && <Text style={ss.checkboxMark}>✓</Text>}
-                  </View>
-                  <View style={ss.scheduleOptionCopy}>
-                    <Text style={ss.scheduleOptionText}>Tomé 30 min de descanso en este tramo</Text>
-                    <Text style={ss.scheduleOptionSub}>Se descuentan del tiempo trabajado</Text>
-                  </View>
-                </TouchableOpacity>
               </View>
             ))}
+            <TouchableOpacity
+              style={[ss.scheduleOption, hasDayBreak && ss.scheduleOptionActive]}
+              onPress={() => toggleDayBreak(index)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: hasDayBreak }}>
+              <View style={[ss.checkbox, hasDayBreak && ss.checkboxChecked]}>
+                {hasDayBreak && <Text style={ss.checkboxMark}>✓</Text>}
+              </View>
+              <View style={ss.scheduleOptionCopy}>
+                <Text style={ss.scheduleOptionText}>¿Tomaste media hora de descanso?</Text>
+                <Text style={ss.scheduleOptionSub}>Se descuenta del tiempo trabajado en cualquier tipo de turno</Text>
+              </View>
+            </TouchableOpacity>
             <TouchableOpacity
               style={[ss.scheduleOption, splitShift && ss.scheduleOptionActive]}
               onPress={() => toggleSplitShift(index)}
