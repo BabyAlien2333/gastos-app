@@ -186,11 +186,16 @@ const calcularHorasTurnos = (turnos = []) => {
   };
 };
 
-const getTurnosActivos = (dia) => {
-  const shifts = dia.shifts || [];
+const getTurnosDelDia = (dia) => {
+  const shifts = Array.isArray(dia.shifts) ? dia.shifts : [];
   const splitShift = dia.splitShift ?? shifts.length > 1;
-  return shifts.slice(0, splitShift ? 2 : 1);
+  const cantidad = splitShift ? 2 : 1;
+  return Array.from({ length: cantidad }, (_, index) =>
+    shifts[index] || { start: "", end: "" }
+  );
 };
+
+const getTurnosActivos = (dia) => getTurnosDelDia(dia);
 
 const splitHoras = (d, limite) => {
   const dia = d.dayHours || 0;
@@ -752,7 +757,11 @@ export default function SalaryCalculator() {
         extrasPendientes: recargosEstePeriodo,
         totalExtrasPendientes: totalRecargosEstePeriodo,
         fecha: new Date().toLocaleDateString("es-CO"),
-        daysSnapshot: days,
+        daysSnapshot: days.map((day) => ({
+          ...day,
+          shifts: getTurnosDelDia(day),
+          splitShift: day.splitShift ?? (Array.isArray(day.shifts) && day.shifts.length > 1),
+        })),
         salarioBase,
         jornadaContractual,
       };
@@ -813,8 +822,8 @@ export default function SalaryCalculator() {
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
         noProgramado: false,
         ...d,
-        shifts: d.shifts || [{ start: "", end: "" }],
-        splitShift: d.splitShift ?? (d.shifts || []).length > 1,
+        shifts: getTurnosDelDia(d),
+        splitShift: d.splitShift ?? (Array.isArray(d.shifts) && d.shifts.length > 1),
       }));
       if (snapshot.length > 0) {
         const primero = snapshot[0];
@@ -959,6 +968,8 @@ export default function SalaryCalculator() {
     const acum = Object.values(savedBalances).reduce((s, b) => s + b.totalNeto, 0);
 
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Liquidación de Nómina · ${labelCorte}</title>
     <style>
       body{font-family:Arial,sans-serif;padding:24px;color:#1a1a1a;font-size:12px}
       h1{color:#4F46E5;font-size:18px}h2{color:#6B7280;font-size:12px;font-weight:normal}
@@ -984,6 +995,16 @@ export default function SalaryCalculator() {
       .weekly-table .num{text-align:right}
       .week-total{background:#EEF2FF;font-weight:600}
       .week-total td{border-top:2px solid #818CF8}
+      @page{size:Letter portrait;margin:14mm}
+      @media print{
+        body{padding:0;font-size:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+        h1{font-size:17px}
+        h2{font-size:10px}
+        h3{margin:12px 0 5px}
+        .week-block{break-inside:avoid;page-break-inside:avoid}
+        thead{display:table-header-group}
+        tr{break-inside:avoid;page-break-inside:avoid}
+      }
     </style></head><body>
     <h1>💰 Liquidación de Nómina</h1>
     <h2>Período: ${labelCorte} · Contrato: ${contrato.label} · Tarifa hora: ${formatCOP(valorHora)}</h2>
@@ -1034,6 +1055,22 @@ export default function SalaryCalculator() {
     </p></body></html>`;
 
     try {
+      if (Platform.OS === "web") {
+        const printWindow = window.open("", "_blank");
+        if (!printWindow) {
+          showAlert("Ventana bloqueada", "Permite las ventanas emergentes para abrir el PDF del informe.");
+          return;
+        }
+        printWindow.onload = () => {
+          printWindow.focus();
+          printWindow.print();
+        };
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+        return;
+      }
+
       const { uri } = await Print.printToFileAsync({ html, base64: false });
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Exportar nómina", UTI: "com.adobe.pdf" });
@@ -1157,7 +1194,7 @@ export default function SalaryCalculator() {
   const updateHours = useCallback((i, field, val) => setDays((p) => p.map((d, idx) => idx === i ? { ...d, [field]: val } : d)), []);
   const updateShift = useCallback((i, shiftIndex, field, value) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
-    const shifts = [...(day.shifts || [])];
+    const shifts = [...getTurnosDelDia(day)];
     shifts[shiftIndex] = {
       ...shifts[shiftIndex],
       [field]: formatearHoraEntrada(value),
@@ -1171,7 +1208,7 @@ export default function SalaryCalculator() {
   })), []);
   const toggleShiftBreak = useCallback((i, shiftIndex) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
-    const shifts = [...(day.shifts || [])];
+    const shifts = [...getTurnosDelDia(day)];
     const shift = shifts[shiftIndex];
     if (!shift) return day;
     shifts[shiftIndex] = { ...shift, breakMinutes: shift.breakMinutes === 30 ? 0 : 30 };
@@ -1183,17 +1220,14 @@ export default function SalaryCalculator() {
   })), []);
   const toggleSplitShift = useCallback((i) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
-    const previousShifts = day.shifts || [{ start: "", end: "" }];
-    const splitShift = !(day.splitShift ?? previousShifts.length > 1);
+    const previousShifts = getTurnosDelDia(day);
+    const splitShift = !(day.splitShift ?? (Array.isArray(day.shifts) && day.shifts.length > 1));
     const shifts = splitShift
       ? [
           previousShifts[0] || { start: "", end: "" },
           previousShifts[1] || { start: "", end: "" },
         ]
       : [previousShifts[0] || { start: "", end: "" }];
-    if (!splitShift) {
-      shifts[0] = { ...shifts[0], breakMinutes: 0 };
-    }
     return {
       ...day,
       shifts,
@@ -1206,7 +1240,7 @@ export default function SalaryCalculator() {
     const isExp = expandedDay === index;
     const cost  = calcDay(item);
     const isEsp = item.especial && !item.descanso && !item.compensatorio;
-    const shifts = item.shifts || [{ start: "", end: "" }];
+    const shifts = getTurnosDelDia(item);
     const splitShift = item.splitShift ?? shifts.length > 1;
     const activeShifts = getTurnosActivos(item);
     const hasCompleteShift = activeShifts.some((shift) =>
@@ -1354,6 +1388,19 @@ export default function SalaryCalculator() {
                     />
                   </View>
                 </View>
+                <TouchableOpacity
+                  style={[ss.scheduleOption, shift.breakMinutes === 30 && ss.scheduleOptionActive]}
+                  onPress={() => toggleShiftBreak(index, shiftIndex)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: shift.breakMinutes === 30 }}>
+                  <View style={[ss.checkbox, shift.breakMinutes === 30 && ss.checkboxChecked]}>
+                    {shift.breakMinutes === 30 && <Text style={ss.checkboxMark}>✓</Text>}
+                  </View>
+                  <View style={ss.scheduleOptionCopy}>
+                    <Text style={ss.scheduleOptionText}>Tomé 30 min de descanso en este tramo</Text>
+                    <Text style={ss.scheduleOptionSub}>Se descuentan del tiempo trabajado</Text>
+                  </View>
+                </TouchableOpacity>
               </View>
             ))}
             <TouchableOpacity
@@ -1369,21 +1416,6 @@ export default function SalaryCalculator() {
                 <Text style={ss.scheduleOptionSub}>Agregar segundo tramo</Text>
               </View>
             </TouchableOpacity>
-            {splitShift && (
-              <TouchableOpacity
-                style={[ss.scheduleOption, shifts[0]?.breakMinutes === 30 && ss.scheduleOptionActive]}
-                onPress={() => toggleShiftBreak(index, 0)}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: shifts[0]?.breakMinutes === 30 }}>
-                <View style={[ss.checkbox, shifts[0]?.breakMinutes === 30 && ss.checkboxChecked]}>
-                  {shifts[0]?.breakMinutes === 30 && <Text style={ss.checkboxMark}>✓</Text>}
-                </View>
-                <View style={ss.scheduleOptionCopy}>
-                  <Text style={ss.scheduleOptionText}>Tomé 30 min de descanso</Text>
-                  <Text style={ss.scheduleOptionSub}>Se descuentan del total trabajado</Text>
-                </View>
-              </TouchableOpacity>
-            )}
             {hasCompleteShift && (
               <View style={ss.shiftSummary}>
                 <Text style={ss.shiftSummaryLabel}>TOTAL TRABAJADO</Text>
