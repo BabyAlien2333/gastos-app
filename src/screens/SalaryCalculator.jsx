@@ -197,6 +197,23 @@ const getTurnosDelDia = (dia) => {
 
 const getTurnosActivos = (dia) => getTurnosDelDia(dia);
 
+const normalizarDiaConHorario = (dia) => {
+  const shifts = getTurnosDelDia(dia);
+  const splitShift = dia.splitShift ?? (Array.isArray(dia.shifts) && dia.shifts.length > 1);
+  const hasCompleteShift = shifts.some((shift) =>
+    parseHoraMinutos(shift.start) !== null &&
+    parseHoraMinutos(shift.end) !== null &&
+    shift.start !== shift.end
+  );
+
+  return {
+    ...dia,
+    shifts,
+    splitShift,
+    ...(hasCompleteShift ? calcularHorasTurnos(shifts) : {}),
+  };
+};
+
 const splitHoras = (d, limite) => {
   const dia = d.dayHours || 0;
   const noche = d.nightHours || 0;
@@ -216,7 +233,8 @@ const getMonthWeekKey = (y, m, d) =>
   `${y}-${pad(m + 1)}-W${pad(Math.ceil(d / 7))}`;
 
 const getMonthWeekParts = (key) => {
-  const [year, month, week] = key.split(/[-W]/);
+  const [, year, month, week] = /^(\d{4})-(\d{2})-W(\d{2})$/.exec(key) || [];
+  if (!year) return { year: "", month: 0, numero: 1, mes: "" };
   return {
     year,
     month: Number(month) - 1,
@@ -365,6 +383,7 @@ export default function SalaryCalculator() {
   });
 
   const [days,        setDays]        = useState([]);
+  const [editingBalanceDocId, setEditingBalanceDocId] = useState(null);
   const [expandedDay, setExpandedDay] = useState(null);
   const [semanaSel,   setSemanaSel]   = useState(null); // null = todo el período
   const [recargosOrigen, setRecargosOrigen] = useState([]);  // períodos de donde se cargaron recargos
@@ -442,6 +461,7 @@ export default function SalaryCalculator() {
     const generados = sugerirCompensatorios(generarDiasCorte(di, mesInicio, df, mesFin));
 
     setDays(generados);
+    setEditingBalanceDocId(null);
     setCorteCargado(true);
     setExpandedDay(null);
     setSemanaSel(null);
@@ -675,6 +695,7 @@ export default function SalaryCalculator() {
   // ── Período nuevo (desde afuera) ──────────────────────────────────────────
   const nuevoPeriodo = () => {
     setDays([]);
+    setEditingBalanceDocId(null);
     setCorteCargado(false);
     setExpandedDay(null);
     setSemanaSel(null);
@@ -739,9 +760,12 @@ export default function SalaryCalculator() {
     setRecargosOrigen([]);
   };
 
-  const isEditing = corteCargado && !!savedBalances[
-    Object.keys(savedBalances).find(k => (savedBalances[k].corte || savedBalances[k].key) === labelCorte)
-  ];
+  const isEditing = corteCargado && (
+    !!editingBalanceDocId ||
+    !!savedBalances[
+      Object.keys(savedBalances).find(k => (savedBalances[k].corte || savedBalances[k].key) === labelCorte)
+    ]
+  );
 
   const handleSave = async () => {
     if (!corteCargado) return showAlert("Carga el período primero");
@@ -775,18 +799,14 @@ export default function SalaryCalculator() {
         extrasPendientes: recargosEstePeriodo,
         totalExtrasPendientes: totalRecargosEstePeriodo,
         fecha: new Date().toLocaleDateString("es-CO"),
-        daysSnapshot: days.map((day) => ({
-          ...day,
-          shifts: getTurnosDelDia(day),
-          splitShift: day.splitShift ?? (Array.isArray(day.shifts) && day.shifts.length > 1),
-        })),
+        daysSnapshot: days.map(normalizarDiaConHorario),
         salarioBase,
         jornadaContractual,
       };
       const balanceExistente = Object.values(savedBalances).find(
         (balance) => (balance.corte || balance.key) === labelCorte
       );
-      await saveBalance(labelCorte, entry, balanceExistente?._docId);
+      await saveBalance(labelCorte, entry, editingBalanceDocId || balanceExistente?._docId);
       for (const origen of recargosOrigen) {
         await marcarRecargosCobrados(origen, labelCorte);
       }
@@ -820,6 +840,7 @@ export default function SalaryCalculator() {
       return;
     }
     setBalanceModal(false);
+    setEditingBalanceDocId(b._docId || null);
     setTimeout(() => {
       const tc = TIPOS_CONTRATO.find((t) => t.id === b.contrato) || TIPOS_CONTRATO[0];
       setTipoContrato(tc);
@@ -840,12 +861,10 @@ export default function SalaryCalculator() {
       if (b.maxHorasTurno)           setMaxHorasTurno(b.maxHorasTurno);
       setRecargosOrigen(b.recargosOrigen || []);
       setExtrasPeriodoAnterior(b.extrasPeriodoAnterior || { extDayH:0, extNightH:0, extDomDayH:0, extDomNightH:0 });
-      const snapshot = balanceDays.map((d) => ({
+      const snapshot = balanceDays.map((d) => normalizarDiaConHorario({
         compensatorio: false, compensatorioPor: null, compensatorioOtorgado: false, compensatorioTipo: null,
         noProgramado: false,
         ...d,
-        shifts: getTurnosDelDia(d),
-        splitShift: d.splitShift ?? (Array.isArray(d.shifts) && d.shifts.length > 1),
       }));
       if (snapshot.length > 0) {
         const primero = snapshot[0];
