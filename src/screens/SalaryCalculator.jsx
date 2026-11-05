@@ -212,17 +212,17 @@ const splitHoras = (d, limite) => {
   };
 };
 
-// Retorna la clave de semana ISO (año-Wsemana), lunes a domingo,
-// que es el estándar usado para jornada laboral en Colombia.
-const getISOWeekKey = (y, m, d) => {
-  const date = new Date(Date.UTC(y, m, d));
-  const dayNum = (date.getUTCDay() + 6) % 7; // Lunes=0 ... Domingo=6
-  date.setUTCDate(date.getUTCDate() - dayNum + 3);
-  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
-  const week = 1 + Math.round(
-    ((date - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7
-  );
-  return `${date.getUTCFullYear()}-W${pad(week)}`;
+const getMonthWeekKey = (y, m, d) =>
+  `${y}-${pad(m + 1)}-W${pad(Math.ceil(d / 7))}`;
+
+const getMonthWeekParts = (key) => {
+  const [year, month, week] = key.split(/[-W]/);
+  return {
+    year,
+    month: Number(month) - 1,
+    numero: Number(week),
+    mes: MESES[Number(month) - 1]?.label || month,
+  };
 };
 
 const generarDiasCorte = (diaInicio, mesInicio, diaFin, mesFin, año = 2026) => {
@@ -625,7 +625,7 @@ export default function SalaryCalculator() {
       const horas = (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
       if (horas <= 0) return;
 
-      const wKey = getISOWeekKey(d.year, d.month, d.day);
+      const wKey = getMonthWeekKey(d.year, d.month, d.day);
       porSemana[wKey] = (porSemana[wKey] || 0) + horas;
 
       const mKey = `${d.year}-${pad(d.month + 1)}`;
@@ -634,7 +634,7 @@ export default function SalaryCalculator() {
 
     const semanas = Object.entries(porSemana)
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([key, horas]) => ({ key, numero: key.split("-W")[1], horas }));
+      .map(([key, horas]) => ({ key, ...getMonthWeekParts(key), horas }));
 
     const meses = Object.entries(porMes)
       .sort((a, b) => a[0].localeCompare(b[0]))
@@ -646,12 +646,12 @@ export default function SalaryCalculator() {
     return { semanas, meses };
   }, [days]);
 
-  // ── Semanas del período (lunes a domingo) ──────────────────────────────────
+  // ── Semanas por mes: 1–7, 8–14, 15–21, 22–28 y 29–fin de mes ───────────────
   const semanasPeriodo = useMemo(() => {
     const map = {};
     days.forEach((d) => {
-      const k = getISOWeekKey(d.year, d.month, d.day);
-      if (!map[k]) map[k] = { key: k, numero: k.split("-W")[1], first: d, last: d };
+      const k = getMonthWeekKey(d.year, d.month, d.day);
+      if (!map[k]) map[k] = { key: k, ...getMonthWeekParts(k), first: d, last: d };
       map[k].last = d;
     });
     return Object.values(map);
@@ -661,7 +661,7 @@ export default function SalaryCalculator() {
     if (!semanaSel) return null;
     let horas = 0, total = 0, trabajados = 0;
     days.forEach((d) => {
-      if (getISOWeekKey(d.year, d.month, d.day) !== semanaSel) return;
+      if (getMonthWeekKey(d.year, d.month, d.day) !== semanaSel) return;
       if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return;
       horas += (d.dayHours || 0) + (d.nightHours || 0) + (d.extraDayH || 0) + (d.extraNightH || 0);
       total += calcDay(d).total;
@@ -888,7 +888,7 @@ export default function SalaryCalculator() {
 
     const semanasDetallePDF = {};
     days.forEach((d) => {
-      const weekKey = getISOWeekKey(d.year, d.month, d.day);
+      const weekKey = getMonthWeekKey(d.year, d.month, d.day);
       if (!semanasDetallePDF[weekKey]) {
         semanasDetallePDF[weekKey] = {
           key: weekKey,
@@ -951,7 +951,8 @@ export default function SalaryCalculator() {
     });
 
     const detalleSemanasPDF = Object.values(semanasDetallePDF).map((semana) => {
-      const titulo = `Semana ${semana.key.split("-W")[1]} · ${labelSemana(semana.first, semana.last)} ${semana.first.year}`;
+      const partes = getMonthWeekParts(semana.key);
+      const titulo = `Semana ${partes.numero} de ${partes.mes} · ${labelSemana(semana.first, semana.last)} ${semana.first.year}`;
       const totalHorasDia = semana.horasDiurnas + semana.horasNocturnas;
       const totalHorasExtra = semana.horasExtraDiurnas + semana.horasExtraNocturnas;
       return `<section class="week-block">
@@ -977,7 +978,7 @@ export default function SalaryCalculator() {
     }).join("");
 
     const semanasPDF = resumenHoras.semanas.map((s) =>
-      `<tr><td>Semana ${s.numero} (${s.key.split("-W")[0]})</td><td style="font-weight:600">${fmtHrs(s.horas)}</td></tr>`
+      `<tr><td>Semana ${s.numero} de ${s.mes} ${s.year}</td><td style="font-weight:600">${fmtHrs(s.horas)}</td></tr>`
     ).join("");
     const mesesPDF = resumenHoras.meses.map((m) =>
       `<tr><td>${m.label}</td><td style="font-weight:600">${fmtHrs(m.horas)}</td></tr>`
@@ -1934,7 +1935,7 @@ export default function SalaryCalculator() {
                   return (
                     <View key={s.key} style={ss.desgloseRow}>
                       <Text style={[ss.desgloseLabel, excede && ss.desgloseLabelWarn]}>
-                        {`Semana ${s.numero}${excede ? " ⚠️" : ""}`}
+                        {`Semana ${s.numero} · ${s.mes}${excede ? " ⚠️" : ""}`}
                       </Text>
                       <Text style={[ss.desgloseValue, excede && ss.desgloseLabelWarn]}>
                         {fmtHrs(s.horas)}
@@ -1988,7 +1989,7 @@ export default function SalaryCalculator() {
                       style={[ss.weekChip, semanaSel === s.key && ss.weekChipActive]}
                       onPress={() => setSemanaSel(s.key)}>
                       <Text style={[ss.weekChipText, semanaSel === s.key && ss.weekChipTextActive]}>
-                        {`Sem ${s.numero}`}
+                        {`${s.mes.slice(0, 3)} · Sem ${s.numero}`}
                       </Text>
                       <Text style={[ss.weekChipSub, semanaSel === s.key && ss.weekChipTextActive]}>
                         {labelSemana(s.first, s.last)}
@@ -2008,7 +2009,7 @@ export default function SalaryCalculator() {
               )}
 
               {days.map((item, index) =>
-                semanaSel && getISOWeekKey(item.year, item.month, item.day) !== semanaSel
+                semanaSel && getMonthWeekKey(item.year, item.month, item.day) !== semanaSel
                   ? null
                   : renderDay(item, index)
               )}
