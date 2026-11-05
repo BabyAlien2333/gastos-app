@@ -211,7 +211,16 @@ const normalizarDiaConHorario = (dia) => {
     ...dia,
     shifts,
     splitShift,
-    ...(hasCompleteShift ? calcularHorasTurnos(shifts) : {}),
+    ...(hasCompleteShift
+      ? {
+          ...calcularHorasTurnos(shifts),
+          worked: true,
+          descanso: false,
+          noProgramado: false,
+          compensatorio: false,
+          compensatorioPor: null,
+        }
+      : {}),
   };
 };
 
@@ -1291,12 +1300,7 @@ export default function SalaryCalculator() {
       ...shifts[shiftIndex],
       [field]: formatearHoraEntrada(value),
     };
-    const activeShifts = getTurnosActivos({ ...day, shifts });
-    return {
-      ...day,
-      shifts,
-      ...calcularHorasTurnos(activeShifts),
-    };
+    return normalizarDiaConHorario({ ...day, shifts });
   })), []);
   const toggleDayBreak = useCallback((i) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
@@ -1305,11 +1309,7 @@ export default function SalaryCalculator() {
     shifts.forEach((shift, shiftIndex) => {
       shifts[shiftIndex] = { ...shift, breakMinutes: !hasBreak && shiftIndex === 0 ? 30 : 0 };
     });
-    return {
-      ...day,
-      shifts,
-      ...calcularHorasTurnos(getTurnosActivos({ ...day, shifts })),
-    };
+    return normalizarDiaConHorario({ ...day, shifts });
   })), []);
   const toggleSplitShift = useCallback((i) => setDays((prev) => prev.map((day, index) => {
     if (index !== i) return day;
