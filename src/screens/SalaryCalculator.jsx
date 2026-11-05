@@ -5,6 +5,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocsFromServer,
   onSnapshot, query,
   setDoc,
   where,
@@ -398,6 +399,8 @@ export default function SalaryCalculator() {
 
   const [savedBalances,   setSavedBalances]   = useState({});
   const [loadingBalances, setLoadingBalances] = useState(true);
+  const [refreshingBalances, setRefreshingBalances] = useState(false);
+  const [savingBalance, setSavingBalance] = useState(false);
 
   useEffect(() => {
     const user = auth.currentUser;
@@ -408,15 +411,48 @@ export default function SalaryCalculator() {
       snap.forEach((d) => { data[d.id] = { ...d.data(), _docId: d.id }; });
       setSavedBalances(data);
       setLoadingBalances(false);
-    }, () => setLoadingBalances(false));
+    }, (error) => {
+      setLoadingBalances(false);
+      showAlert("Error", `No se pudieron cargar los balances: ${error.message}`);
+    });
     return () => unsub();
   }, []);
 
+  const refreshBalances = async ({ showSuccess = true, showErrors = true } = {}) => {
+    const user = auth.currentUser;
+    if (!user) {
+      if (showErrors) showAlert("Error", "Debes iniciar sesión para actualizar los balances.");
+      return false;
+    }
+
+    setRefreshingBalances(true);
+    try {
+      const q = query(collection(db, "salary_balances"), where("uid", "==", user.uid));
+      const snap = await getDocsFromServer(q);
+      const data = {};
+      snap.forEach((balance) => {
+        data[balance.id] = { ...balance.data(), _docId: balance.id };
+      });
+      setSavedBalances(data);
+      if (showSuccess) showAlert("Balances actualizados", `Se cargaron ${snap.size} balances desde el servidor.`);
+      return true;
+    } catch (error) {
+      if (showErrors) showAlert("Error", `No se pudieron actualizar los balances: ${error.message}`);
+      return false;
+    } finally {
+      setRefreshingBalances(false);
+    }
+  };
+
   const saveBalance = async (key, entry, existingDocId) => {
     const user = auth.currentUser;
-    if (!user) return showAlert("Error", "Debes iniciar sesión para guardar.");
+    if (!user) {
+      showAlert("Error", "Debes iniciar sesión para guardar.");
+      return null;
+    }
     const docId = existingDocId || `${user.uid}_${key.replace(/[^a-zA-Z0-9]/g, "_")}`;
     await setDoc(doc(db, "salary_balances", docId), { ...entry, uid: user.uid });
+    return docId;
   };
 
   const deleteBalance = async (key) => {
@@ -767,8 +803,9 @@ export default function SalaryCalculator() {
     ]
   );
 
-  const handleSave = async () => {
+  const handleSave = async ({ refreshAfterSave = false } = {}) => {
     if (!corteCargado) return showAlert("Carga el período primero");
+    setSavingBalance(true);
     try {
       const entry = {
         key: labelCorte,
@@ -806,20 +843,33 @@ export default function SalaryCalculator() {
       const balanceExistente = Object.values(savedBalances).find(
         (balance) => (balance.corte || balance.key) === labelCorte
       );
-      await saveBalance(labelCorte, entry, editingBalanceDocId || balanceExistente?._docId);
+      const savedDocId = await saveBalance(labelCorte, entry, editingBalanceDocId || balanceExistente?._docId);
+      if (!savedDocId) return;
       for (const origen of recargosOrigen) {
         await marcarRecargosCobrados(origen, labelCorte);
       }
-      showAlert(
-        isEditing ? "✅ Actualizado" : "✅ Guardado",
-        `Balance ${labelCorte} guardado y sincronizado.\n\n¿Quieres empezar un período nuevo?`,
-        [
-          { text: "Seguir aquí", style: "cancel" },
-          { text: "Nuevo período", onPress: nuevoPeriodo },
-        ]
-      );
+      if (refreshAfterSave) {
+        const refreshed = await refreshBalances({ showSuccess: false, showErrors: false });
+        showAlert(
+          refreshed ? "✅ Actualizado" : "✅ Guardado",
+          refreshed
+            ? `Los horarios, horas y valor del balance ${labelCorte} se actualizaron en la lista.`
+            : `El balance ${labelCorte} se guardó, pero no se pudo volver a cargar desde el servidor.`
+        );
+      } else {
+        showAlert(
+          isEditing ? "✅ Actualizado" : "✅ Guardado",
+          `Balance ${labelCorte} guardado y sincronizado.\n\n¿Quieres empezar un período nuevo?`,
+          [
+            { text: "Seguir aquí", style: "cancel" },
+            { text: "Nuevo período", onPress: nuevoPeriodo },
+          ]
+        );
+      }
     } catch (e) {
       showAlert("Error", "No se pudo guardar: " + e.message);
+    } finally {
+      setSavingBalance(false);
     }
   };
 
@@ -1535,10 +1585,10 @@ export default function SalaryCalculator() {
             <Text style={ss.headerSub}>{`Ley 2101 · ${HORAS_SEMANA_2026}h/sem · CST actualizado`}</Text>
             {loadingBalances ? (
               <ActivityIndicator color="#C7D2FE" style={{ marginTop: 10 }} />
-            ) : balanceList.length > 0 && (
+            ) : (
               <TouchableOpacity style={ss.headerBalanceBtn} onPress={() => setBalanceModal(true)}>
                 <Text style={ss.headerBalanceBtnText}>
-                  {`📊 Balance (${balanceList.length} período${balanceList.length > 1 ? "s" : ""}) · ☁️ sincronizado`}
+                  {`📊 Balances (${balanceList.length}) · ☁️`}
                 </Text>
               </TouchableOpacity>
             )}
@@ -1994,6 +2044,18 @@ export default function SalaryCalculator() {
                 Toca 🛌 descanso · ⛔ no programado (no trabaja y no se paga) · ✕ no trabajado · en domingo/festivo trabajado, 💰/🔄 alterna entre
                 pagarlo en dinero u otorgar día libre · en un día ordinario, 🔄 lo marca como ese día libre
               </Text>
+              <View style={ss.scheduleSaveRow}>
+                <TouchableOpacity
+                  style={[ss.refreshScheduleBtn, (savingBalance || refreshingBalances) && { opacity: 0.6 }]}
+                  onPress={() => handleSave({ refreshAfterSave: true })}
+                  disabled={savingBalance || refreshingBalances}
+                  accessibilityRole="button"
+                  accessibilityLabel="Guardar cambios de horario y actualizar balance">
+                  {savingBalance || refreshingBalances
+                    ? <ActivityIndicator size="small" color="#4F46E5" />
+                    : <Text style={ss.refreshScheduleBtnText}>↻ Guardar horarios y actualizar balance</Text>}
+                </TouchableOpacity>
+              </View>
 
               {/* Selector de semanas */}
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
@@ -2151,8 +2213,8 @@ export default function SalaryCalculator() {
               )}
 
               <View style={ss.actionRow}>
-                <TouchableOpacity style={ss.saveBtn} onPress={handleSave}>
-                  <Text style={ss.saveBtnText}>{isEditing ? "✏️ Actualizar" : "💾 Guardar"}</Text>
+                <TouchableOpacity style={ss.saveBtn} onPress={handleSave} disabled={savingBalance}>
+                  <Text style={ss.saveBtnText}>{savingBalance ? "Guardando..." : isEditing ? "✏️ Actualizar" : "💾 Guardar"}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={ss.pdfBtn} onPress={exportPDF}>
                   <Text style={ss.pdfBtnText}>📄 PDF</Text>
@@ -2260,7 +2322,19 @@ export default function SalaryCalculator() {
         <Modal visible={balanceModal} transparent animationType="slide" onRequestClose={() => setBalanceModal(false)}>
           <TouchableOpacity style={ss.modalOverlay} activeOpacity={1} onPress={() => setBalanceModal(false)}>
             <View style={ss.modalBox}>
-              <Text style={ss.modalTitle}>📊 Balances guardados 2026</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
+                <Text style={[ss.modalTitle, { flex: 1, marginBottom: 0 }]}>📊 Balances guardados 2026</Text>
+                <TouchableOpacity
+                  style={[ss.refreshBalancesBtn, refreshingBalances && { opacity: 0.6 }]}
+                  onPress={refreshBalances}
+                  disabled={refreshingBalances}
+                  accessibilityRole="button"
+                  accessibilityLabel="Actualizar balances desde el servidor">
+                  {refreshingBalances
+                    ? <ActivityIndicator size="small" color="#4F46E5" />
+                    : <Text style={ss.refreshBalancesBtnText}>↻ Actualizar</Text>}
+                </TouchableOpacity>
+              </View>
               {balanceList.length === 0 ? (
                 <Text style={{ color: "#9CA3AF", textAlign: "center", marginTop: 20 }}>Aún no hay períodos guardados</Text>
               ) : (<>
@@ -2389,6 +2463,9 @@ const ss = StyleSheet.create({
   stepperVal:  { flex:1, textAlign:"center", fontSize:13, fontWeight:"600", color:"#111" },
   legendRow:  { flexDirection:"row", flexWrap:"wrap", gap:8, marginBottom:10, paddingHorizontal:2 },
   legendItem: { flexDirection:"row", alignItems:"center", gap:4 },
+  scheduleSaveRow: { flexDirection:"row", justifyContent:"flex-end", marginTop:8, marginBottom:8 },
+  refreshScheduleBtn: { minHeight:38, justifyContent:"center", alignItems:"center", paddingHorizontal:14, borderWidth:1, borderColor:"#C7D2FE", borderRadius:10, backgroundColor:"#EEF2FF" },
+  refreshScheduleBtnText: { color:"#4338CA", fontSize:12, fontWeight:"700" },
   legendDot:  { width:12, height:12, borderRadius:6 },
   legendText: { fontSize:10, color:"#6B7280" },
   dayRow:        { borderWidth:1, borderColor:"#E5E7EB", borderRadius:10, marginBottom:6, backgroundColor:"#FAFAFA", overflow:"hidden" },
@@ -2458,6 +2535,8 @@ const ss = StyleSheet.create({
   modalOverlay: { flex:1, backgroundColor:"rgba(0,0,0,0.4)", justifyContent:"flex-end" },
   modalBox:     { backgroundColor:"#fff", borderTopLeftRadius:20, borderTopRightRadius:20, padding:20, maxHeight:"80%" },
   modalTitle:   { fontSize:17, fontWeight:"700", color:"#1E1B4B", marginBottom:16 },
+  refreshBalancesBtn: { minHeight:36, justifyContent:"center", paddingHorizontal:12, borderWidth:1, borderColor:"#C7D2FE", borderRadius:9, backgroundColor:"#EEF2FF" },
+  refreshBalancesBtnText: { color:"#4F46E5", fontSize:12, fontWeight:"700" },
   contractItem:       { flexDirection:"row", alignItems:"flex-start", paddingVertical:12, borderBottomWidth:1, borderBottomColor:"#F3F4F6", gap:10 },
   contractItemActive: { backgroundColor:"#EEF2FF", borderRadius:10, paddingHorizontal:8, marginHorizontal:-8 },
   contractItemIcon:   { fontSize:20, marginTop:2 },
