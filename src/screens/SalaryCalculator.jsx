@@ -10,7 +10,8 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -410,6 +411,30 @@ export default function SalaryCalculator() {
   const [loadingBalances, setLoadingBalances] = useState(true);
   const [refreshingBalances, setRefreshingBalances] = useState(false);
   const [savingBalance, setSavingBalance] = useState(false);
+  const activeBalanceRestored = useRef(false);
+  const [draftRestoreDone, setDraftRestoreDone] = useState(false);
+  const [hasRestoredScheduleDraft, setHasRestoredScheduleDraft] = useState(false);
+  const [activeBalanceDocIdToRestore, setActiveBalanceDocIdToRestore] = useState(null);
+
+  const rememberActiveBalance = useCallback(async (docId) => {
+    const user = auth.currentUser;
+    if (!user) return;
+    try {
+      await AsyncStorage.setItem(`salary_calculator_active_balance_${user.uid}`, docId);
+    } catch (error) {
+      showAlert("Error", `El balance se guardó, pero no se pudo recordar el período: ${error.message}`);
+    }
+  }, []);
+
+  const clearActiveBalance = useCallback(async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    try {
+      await AsyncStorage.removeItem(`salary_calculator_active_balance_${user.uid}`);
+    } catch (error) {
+      showAlert("Error", `No se pudo limpiar el período recordado: ${error.message}`);
+    }
+  }, []);
 
   useEffect(() => {
     const user = auth.currentUser;
@@ -426,6 +451,68 @@ export default function SalaryCalculator() {
     });
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (!user) {
+      setDraftRestoreDone(true);
+      return;
+    }
+
+    let cancelled = false;
+    const draftKey = `salary_calculator_schedule_draft_${user.uid}`;
+    const activeBalanceKey = `salary_calculator_active_balance_${user.uid}`;
+    Promise.all([
+      AsyncStorage.getItem(draftKey),
+      AsyncStorage.getItem(activeBalanceKey),
+    ]).then(([rawDraft, activeBalanceDocId]) => {
+      if (cancelled) return;
+      if (rawDraft) {
+        const draft = JSON.parse(rawDraft);
+        if (draft.corteCargado && Array.isArray(draft.days) && draft.days.length > 0) {
+          setDiaInicio(String(draft.diaInicio));
+          setMesInicio(draft.mesInicio);
+          setDiaFin(String(draft.diaFin));
+          setMesFin(draft.mesFin);
+          setDays(draft.days.map(normalizarDiaConHorario));
+          setCorteCargado(true);
+          setHasRestoredScheduleDraft(true);
+        }
+      }
+      setActiveBalanceDocIdToRestore(activeBalanceDocId);
+    }).catch((error) => {
+      showAlert("Error", `No se pudieron restaurar los horarios: ${error.message}`);
+    }).finally(() => {
+      if (!cancelled) setDraftRestoreDone(true);
+    });
+
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!draftRestoreDone) return;
+    const user = auth.currentUser;
+    if (!user) return;
+    const draftKey = `salary_calculator_schedule_draft_${user.uid}`;
+    if (!corteCargado || days.length === 0) {
+      AsyncStorage.removeItem(draftKey).catch((error) => {
+        showAlert("Error", `No se pudo limpiar el borrador de horarios: ${error.message}`);
+      });
+      return;
+    }
+
+    const draft = {
+      corteCargado,
+      diaInicio,
+      mesInicio,
+      diaFin,
+      mesFin,
+      days: days.map(normalizarDiaConHorario),
+    };
+    AsyncStorage.setItem(draftKey, JSON.stringify(draft)).catch((error) => {
+      showAlert("Error", `No se pudieron guardar los horarios temporalmente: ${error.message}`);
+    });
+  }, [draftRestoreDone, corteCargado, days, diaInicio, mesInicio, diaFin, mesFin]);
 
   const refreshBalances = async ({ showSuccess = true, showErrors = true } = {}) => {
     const user = auth.currentUser;
@@ -739,6 +826,7 @@ export default function SalaryCalculator() {
 
   // ── Período nuevo (desde afuera) ──────────────────────────────────────────
   const nuevoPeriodo = () => {
+    void clearActiveBalance();
     setDays([]);
     setEditingBalanceDocId(null);
     setCorteCargado(false);
@@ -854,6 +942,7 @@ export default function SalaryCalculator() {
       );
       const savedDocId = await saveBalance(labelCorte, entry, editingBalanceDocId || balanceExistente?._docId);
       if (!savedDocId) return;
+      await rememberActiveBalance(savedDocId);
       for (const origen of recargosOrigen) {
         await marcarRecargosCobrados(origen, labelCorte);
       }
@@ -892,7 +981,7 @@ export default function SalaryCalculator() {
     ]);
   };
 
-  const handleEdit = (b) => {
+  const handleEdit = useCallback((b) => {
     const balanceDays = generarDiasDeBalance(b);
     if (!balanceDays) {
       showAlert("Balance antiguo", "Este balance no tiene datos para editar.");
@@ -900,6 +989,7 @@ export default function SalaryCalculator() {
     }
     setBalanceModal(false);
     setEditingBalanceDocId(b._docId || null);
+    if (b._docId) void rememberActiveBalance(b._docId);
     setTimeout(() => {
       const tc = TIPOS_CONTRATO.find((t) => t.id === b.contrato) || TIPOS_CONTRATO[0];
       setTipoContrato(tc);
@@ -938,7 +1028,28 @@ export default function SalaryCalculator() {
       setExpandedDay(null);
       setSemanaSel(null);
     }, 300);
-  };
+  }, [rememberActiveBalance]);
+
+  useEffect(() => {
+    const user = auth.currentUser;
+    if (loadingBalances || !draftRestoreDone || !user || activeBalanceRestored.current) return;
+    if (hasRestoredScheduleDraft || !activeBalanceDocIdToRestore) {
+      activeBalanceRestored.current = true;
+      return;
+    }
+    const balance = savedBalances[activeBalanceDocIdToRestore];
+    if (balance) {
+      activeBalanceRestored.current = true;
+      handleEdit(balance);
+    }
+  }, [
+    activeBalanceDocIdToRestore,
+    draftRestoreDone,
+    handleEdit,
+    hasRestoredScheduleDraft,
+    loadingBalances,
+    savedBalances,
+  ]);
 
   // ── Exportar PDF ──────────────────────────────────────────────────────────
   const exportPDF = async () => {
