@@ -225,10 +225,13 @@ const normalizarDiaConHorario = (dia) => {
   };
 };
 
+const HORAS_ORDINARIAS_DIA_ESPECIAL = 8;
+
 const splitHoras = (d, limite) => {
   const dia = d.dayHours || 0;
   const noche = d.nightHours || 0;
-  const exceso = Math.max(0, dia + noche - limite);
+  const limiteAplicado = d.especial ? HORAS_ORDINARIAS_DIA_ESPECIAL : limite;
+  const exceso = Math.max(0, dia + noche - limiteAplicado);
   const exNoche = Math.min(noche, exceso);
   const exDia = exceso - exNoche;
   return {
@@ -1632,7 +1635,7 @@ export default function SalaryCalculator() {
             )}
             {h.autoExtra > 0 && (
               <Text style={ss.autoExtraNote}>
-                {`⚡ ${fmtHrs(h.autoExtra)} pasan automáticamente a extras (más de ${limiteTurnoNum}h en el turno)`}
+                {`⚡ ${fmtHrs(h.autoExtra)} pasan automáticamente a extras (más de ${item.especial ? HORAS_ORDINARIAS_DIA_ESPECIAL : limiteTurnoNum}h en el turno)`}
               </Text>
             )}
             <Text style={[ss.groupLabel, { marginTop: 10, color: "#F59E0B" }]}>
@@ -1738,7 +1741,7 @@ export default function SalaryCalculator() {
             <View style={ss.dividerLight} />
             <Text style={ss.cutLabel}>Horas ordinarias por turno</Text>
             <Text style={ss.cutDesc}>
-              {`Lo que pase de ${limiteTurnoNum}h en un turno cuenta como extra automáticamente, sin importar si la semana es de 42 o 50h.`}
+              {`En días ordinarios, lo que pase de ${limiteTurnoNum}h en el turno cuenta como extra. En domingos y festivos, las extras empiezan después de ${HORAS_ORDINARIAS_DIA_ESPECIAL}h.`}
             </Text>
             <View style={ss.domRow}>
               <TextInput style={[ss.cutInput, { flex: 1 }]} keyboardType="numeric"
