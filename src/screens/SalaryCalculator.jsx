@@ -1072,10 +1072,12 @@ export default function SalaryCalculator() {
         : d.compensatorio ? "#ede9fe" : d.descanso ? "#dbeafe" : !d.worked ? "#f3f4f6"
         : d.festivo ? "#fde68a" : d.domingo ? "#fef9c3" : "#fff";
       const mostrarHoras = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
+      const horasNocturnasRecargo = mostrarHoras ? r2(h.ordNight + h.exNight) : 0;
       return `<tr style="background:${bg}">
         <td>${fechaConDia}</td><td>${tipo}</td>
         <td>${mostrarHoras ? fmtHrs(h.ordDay)   : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(h.ordNight) : "-"}</td>
+        <td>${mostrarHoras ? fmtHrs(horasNocturnasRecargo) : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(h.exDay + h.exNight) : "-"}</td>
         <td style="font-weight:600">${(d.worked && !d.descanso && !d.noProgramado) ? formatCOP(c.total) : "-"}</td>
       </tr>`;
@@ -1102,7 +1104,6 @@ export default function SalaryCalculator() {
       horasNocturnasRecargo: 0,
       subtotal: 0,
     });
-    const horasOrdinariasPDF = r2(totalesHorasPDF.ordinariasDia + totalesHorasPDF.ordinariasNoche);
     const horasExtrasPDF = r2(totalesHorasPDF.extrasDia + totalesHorasPDF.extrasNoche);
     const horasNocturnasConRecargoPDF = r2(totalesHorasPDF.horasNocturnasRecargo);
 
@@ -1204,12 +1205,6 @@ export default function SalaryCalculator() {
       `<tr><td>${m.label}</td><td style="font-weight:600">${fmtHrs(m.horas)}</td></tr>`
     ).join("");
 
-    const balRows = Object.values(savedBalances).map((b) => `
-      <tr><td>${b.corte}</td><td>${b.contrato}</td><td>${b.dias}</td>
-      <td>${formatCOP(b.totalBruto)}</td><td>${formatCOP(b.totalNeto)}</td></tr>`).join("");
-
-    const acum = Object.values(savedBalances).reduce((s, b) => s + b.totalNeto, 0);
-
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>Liquidación de Nómina · ${labelCorte}</title>
@@ -1278,7 +1273,7 @@ export default function SalaryCalculator() {
       </tr></thead>
       <tbody>${filas}</tbody>
       <tfoot><tr class="days-total">
-        <td colspan="2">TOTAL DEL PERÍODO · Ordinarias: ${fmtHrs(horasOrdinariasPDF)}</td>
+        <td colspan="2">TOTAL DEL PERÍODO</td>
         <td>${fmtHrs(totalesHorasPDF.ordinariasDia)}</td>
         <td>${fmtHrs(totalesHorasPDF.ordinariasNoche)}</td>
         <td>${fmtHrs(horasNocturnasConRecargoPDF)}</td>
@@ -1303,11 +1298,6 @@ export default function SalaryCalculator() {
       <div class="row"><span class="lbl">(-) Pensión 4%</span><span class="val">-${formatCOP(deducPension)}</span></div>` : ""}
     </div>
     <div class="neto"><div class="neto-lbl">NETO A PAGAR</div><div class="neto-val">${formatCOP(totalNeto)}</div></div>
-    ${Object.keys(savedBalances).length > 0 ? `
-    <h3>Balance acumulado 2026</h3>
-    <table><thead><tr><th>Período</th><th>Contrato</th><th>Días</th><th>Bruto</th><th>Neto</th></tr></thead>
-    <tbody>${balRows}</tbody></table>
-    <div class="neto"><div class="neto-lbl">ACUMULADO NETO 2026</div><div class="neto-val">${formatCOP(acum)}</div></div>` : ""}
     <p style="font-size:9px;color:#9CA3AF;margin-top:16px">
       Recargos CST Colombia · Ley 2101/2021 · Compensatorios CST art. 179-180 · Extras pagadas mes vencido
     </p></body></html>`;
