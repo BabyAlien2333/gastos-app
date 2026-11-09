@@ -1059,6 +1059,9 @@ export default function SalaryCalculator() {
     const filas = days.map((d) => {
       const c = calcDay(d);
       const h = splitHoras(d, limiteTurnoNum);
+      const nombreDia = new Intl.DateTimeFormat("es-CO", { weekday: "long" })
+        .format(new Date(d.year, d.month, d.day));
+      const fechaConDia = `${d.label} (${nombreDia})`;
       const tipo = d.noProgramado ? "No programado (sin pago)"
         : d.compensatorio ? `Compensatorio (día libre${d.compensatorioPor ? ` · por ${d.compensatorioPor}` : ""})`
         : d.descanso ? "Descanso"
@@ -1070,13 +1073,26 @@ export default function SalaryCalculator() {
         : d.festivo ? "#fde68a" : d.domingo ? "#fef9c3" : "#fff";
       const mostrarHoras = d.worked && !d.descanso && !d.compensatorio && !d.noProgramado;
       return `<tr style="background:${bg}">
-        <td>${d.label}</td><td>${tipo}</td>
+        <td>${fechaConDia}</td><td>${tipo}</td>
         <td>${mostrarHoras ? fmtHrs(h.ordDay)   : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(h.ordNight) : "-"}</td>
         <td>${mostrarHoras ? fmtHrs(h.exDay + h.exNight) : "-"}</td>
         <td style="font-weight:600">${(d.worked && !d.descanso && !d.noProgramado) ? formatCOP(c.total) : "-"}</td>
       </tr>`;
     }).join("");
+
+    const totalesHorasPDF = days.reduce((totales, d) => {
+      if (!d.worked || d.descanso || d.compensatorio || d.noProgramado) return totales;
+      const h = splitHoras(d, limiteTurnoNum);
+      totales.ordinariasDia += h.ordDay;
+      totales.ordinariasNoche += h.ordNight;
+      totales.extrasDia += h.exDay;
+      totales.extrasNoche += h.exNight;
+      return totales;
+    }, { ordinariasDia: 0, ordinariasNoche: 0, extrasDia: 0, extrasNoche: 0 });
+    const horasOrdinariasPDF = r2(totalesHorasPDF.ordinariasDia + totalesHorasPDF.ordinariasNoche);
+    const horasExtrasPDF = r2(totalesHorasPDF.extrasDia + totalesHorasPDF.extrasNoche);
+    const horasNocturnasConRecargoPDF = r2(totalesHorasPDF.ordinariasNoche + totalesHorasPDF.extrasNoche);
 
     const semanasDetallePDF = {};
     days.forEach((d) => {
@@ -1210,6 +1226,9 @@ export default function SalaryCalculator() {
       .weekly-table .num{text-align:right}
       .week-total{background:#EEF2FF;font-weight:600}
       .week-total td{border-top:2px solid #818CF8}
+      .hours-summary{width:min(100%,520px);margin-left:auto}
+      .hours-summary td:last-child{text-align:right;font-weight:600}
+      .hours-summary .hours-total{background:#EEF2FF;font-weight:700}
       @page{size:Letter portrait;margin:14mm}
       @media print{
         body{padding:0;font-size:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -1243,6 +1262,15 @@ export default function SalaryCalculator() {
     <h3>Detalle de días</h3>
     <table><thead><tr><th>Día</th><th>Tipo</th><th>Hrs ord. día</th><th>Hrs ord. noche</th><th>Hrs extra</th><th>Subtotal</th></tr></thead>
     <tbody>${filas}</tbody></table>
+    <table class="hours-summary">
+      <thead><tr><th>Resumen de horas</th><th>Total</th></tr></thead>
+      <tbody>
+        <tr><td>Horas ordinarias (${fmtHrs(totalesHorasPDF.ordinariasDia)} día · ${fmtHrs(totalesHorasPDF.ordinariasNoche)} noche)</td><td>${fmtHrs(horasOrdinariasPDF)}</td></tr>
+        <tr><td>Horas extra (${fmtHrs(totalesHorasPDF.extrasDia)} día · ${fmtHrs(totalesHorasPDF.extrasNoche)} noche)</td><td>${fmtHrs(horasExtrasPDF)}</td></tr>
+        <tr><td>Horas nocturnas con recargo (${fmtHrs(totalesHorasPDF.ordinariasNoche)} ordinarias · ${fmtHrs(totalesHorasPDF.extrasNoche)} extra)</td><td>${fmtHrs(horasNocturnasConRecargoPDF)}</td></tr>
+        <tr class="hours-total"><td>Total de horas trabajadas</td><td>${fmtHrs(r2(horasOrdinariasPDF + horasExtrasPDF))}</td></tr>
+      </tbody>
+    </table>
     <div class="box">
       <div class="row"><span class="lbl">Días trabajados</span><span class="val">${diasTrabajados.length}</span></div>
       <div class="row"><span class="lbl">Días de descanso</span><span class="val">${diasDescanso}</span></div>
